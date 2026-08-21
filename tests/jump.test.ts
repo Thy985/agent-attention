@@ -1,5 +1,4 @@
-import { jumpToTarget, AgentTarget } from '../src/jump';
-import { execSync } from 'child_process';
+﻿import { jumpToTarget, AgentTarget } from '../src/jump';
 
 describe('jumpToTarget', () => {
   let warnSpy: jest.SpyInstance;
@@ -30,7 +29,7 @@ describe('jumpToTarget', () => {
     expect(warnSpy).not.toHaveBeenCalled();
   });
 
-  it('does not throw on execSync failure', () => {
+  it('does not throw on spawnSync failure', () => {
     const target: AgentTarget = { type: 'terminal', pid: 0 };
     expect(() => jumpToTarget(target)).not.toThrow();
   });
@@ -39,5 +38,12 @@ describe('jumpToTarget', () => {
     const target: AgentTarget = { type: 'terminal', pid: process.pid };
     // Should not throw even if SetForegroundWindow fails
     expect(() => jumpToTarget(target)).not.toThrow();
+  });
+
+  it('uses spawnSync with explicit process.execPath (regression guard)', () => {
+    // Verify the source uses spawnSync, not execSync
+    const fs = require('fs');
+    const src = fs.readFileSync('src/jump.ts', 'utf8');
+    expect(src).toContain('spawnSync(process.execPath');
   });
 });

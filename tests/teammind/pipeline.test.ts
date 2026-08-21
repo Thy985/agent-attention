@@ -1,8 +1,8 @@
-import { AttentionPipeline } from '../src/teammind/AttentionPipeline';
-import { EventType, TeamMindEvent } from '../src/teammind/types';
+﻿import { AttentionPipeline } from '../../src/teammind/AttentionPipeline';
+import { EventType, TeamMindEvent } from '../../src/teammind/types';
 
 // Mock the notification sink to avoid actual Toast/Sound calls
-jest.mock('../src/teammind/NotificationSink', () => ({
+jest.mock('../../src/teammind/NotificationSink', () => ({
   ToastSink: class {
     async deliver() {}
   },
@@ -108,7 +108,7 @@ describe('AttentionPipeline', () => {
   describe('context updates', () => {
     it('updates context via setContext', () => {
       pipeline.setContext({ isLeadRunning: true, blocksDownstream: true });
-      // No assertion needed — just verify it doesn't throw
+      // No assertion needed 鈥?just verify it doesn't throw
     });
   });
 });

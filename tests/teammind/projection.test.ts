@@ -1,5 +1,5 @@
-import { AttentionProjection } from '../src/teammind/AttentionProjection';
-import { AttentionSignal } from '../src/teammind/types';
+﻿import { AttentionProjection } from '../../src/teammind/AttentionProjection';
+import { AttentionSignal } from '../../src/teammind/types';
 
 describe('AttentionProjection', () => {
   let projection: AttentionProjection;

@@ -1,5 +1,5 @@
-import { mapTeamMindEvent, isAttentionRelevant } from '../src/teammind/EventAdapter';
-import { EventType, TeamMindEvent } from '../src/teammind/types';
+﻿import { mapTeamMindEvent, isAttentionRelevant } from '../../src/teammind/EventAdapter';
+import { EventType, TeamMindEvent } from '../../src/teammind/types';
 
 describe('mapTeamMindEvent', () => {
   const baseEvent = (type: EventType | string, overrides: Partial<TeamMindEvent> = {}): TeamMindEvent => ({
@@ -13,7 +13,7 @@ describe('mapTeamMindEvent', () => {
     ...overrides,
   });
 
-  describe('P0 events — always mapped', () => {
+  describe('P0 events 鈥?always mapped', () => {
     it('maps DECISION_REQUIRES_APPROVAL to permission_required P0', () => {
       const event = baseEvent(EventType.DECISION_REQUIRES_APPROVAL, {
         metadata: { question: 'Execute git push?' },
@@ -57,7 +57,7 @@ describe('mapTeamMindEvent', () => {
     });
   });
 
-  describe('P1 events — mapped with context', () => {
+  describe('P1 events 鈥?mapped with context', () => {
     it('maps TASK_COMPLETED to completed P1', () => {
       const event = baseEvent(EventType.TASK_COMPLETED, {
         metadata: { summary: 'All tests passed' },
@@ -99,7 +99,7 @@ describe('mapTeamMindEvent', () => {
     });
   });
 
-  describe('Silent events — not mapped', () => {
+  describe('Silent events 鈥?not mapped', () => {
     const silentTypes = [
       EventType.AGENT_CHUNK,
       EventType.TOOL_CALLED,

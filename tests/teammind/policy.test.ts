@@ -1,6 +1,6 @@
-import { AttentionPolicy, DEFAULT_ATTENTION_RULES } from '../src/teammind/AttentionPolicy';
-import { mapTeamMindEvent } from '../src/teammind/EventAdapter';
-import { EventType, TeamMindEvent } from '../src/teammind/types';
+﻿import { AttentionPolicy, DEFAULT_ATTENTION_RULES } from '../../src/teammind/AttentionPolicy';
+import { mapTeamMindEvent } from '../../src/teammind/EventAdapter';
+import { EventType, TeamMindEvent } from '../../src/teammind/types';
 
 describe('AttentionPolicy', () => {
   const baseEvent = (type: EventType | string, overrides: Partial<TeamMindEvent> = {}): TeamMindEvent => ({
@@ -31,7 +31,7 @@ describe('AttentionPolicy', () => {
     });
   });
 
-  describe('evaluate — P0 events', () => {
+  describe('evaluate 鈥?P0 events', () => {
     it('returns signal for permission_required', () => {
       const event = baseEvent(EventType.DECISION_REQUIRES_APPROVAL, {
         metadata: { question: 'Execute git push?' },
@@ -62,7 +62,7 @@ describe('AttentionPolicy', () => {
     });
   });
 
-  describe('evaluate — P1 events', () => {
+  describe('evaluate 鈥?P1 events', () => {
     it('returns signal for task_completed', () => {
       const event = baseEvent(EventType.TASK_COMPLETED);
       const mapped = mapTeamMindEvent(event)!;
@@ -80,7 +80,7 @@ describe('AttentionPolicy', () => {
     });
   });
 
-  describe('evaluate — silent events', () => {
+  describe('evaluate 鈥?silent events', () => {
     it('returns null for agent.chunk (progress event)', () => {
       const event = baseEvent(EventType.AGENT_CHUNK);
       const mapped = mapTeamMindEvent(event);

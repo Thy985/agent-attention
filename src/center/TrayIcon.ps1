@@ -1,4 +1,4 @@
-# Agent Attention Center — Tray Icon (PowerShell + WPF)
+﻿# Agent Attention Center 鈥?Tray Icon (PowerShell + WPF)
 # Usage:
 #   TrayIcon.ps1 show                    # start persistent NotifyIcon
 #   TrayIcon.ps1 exit                    # close icon and exit
@@ -119,7 +119,7 @@ function Start-Tray {
     })
 
     # Read state JSON from stdin line by line
-    $reader = [System.IO.StreamReader]::new([Console]::OpenStandardInput())
+    $reader = New-Object System.IO.StreamReader([Console]::OpenStandardInput())
     while ($true) {
         $line = $reader.ReadLine()
         if ($null -eq $line) { break }
@@ -143,3 +143,4 @@ switch ($Command) {
     'show' { Start-Tray }
     'exit' { Invoke-Exit }
 }
+
