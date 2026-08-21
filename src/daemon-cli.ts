@@ -18,13 +18,16 @@ function runPs(script: string, timeoutMs = 5000): string {
   }
 }
 
-/** Get PowerShell.exe PIDs whose command line contains the given pattern (PS5.1-safe). */
-function getPsPids(pattern: string): number[] {
+/** Get PowerShell.exe PIDs whose command line contains the given pattern (PS5.1-safe).
+ *  Excludes the current process to avoid self-matching. */
+function getPsPids(pattern: string, excludeSelf = true): number[] {
   try {
+    const selfPid = excludeSelf ? String(process.pid) : '';
     const out = runPs(
       'get-ciminstance win32_process | where-object { $_.name -eq ' +
-      "'powershell.exe' -and $_.commandline -like '*" + pattern + "*' } " +
-      '| select-object -expandproperty processid',
+      "'powershell.exe' -and $_.commandline -like '*" + pattern + "*'" +
+      (selfPid ? ' -and $_.processid -ne ' + selfPid : '') +
+      '} | select-object -expandproperty processid',
     );
     return out.trim().split('\n').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n));
   } catch { return []; }
@@ -92,6 +95,47 @@ function killTrayByPid(): boolean {
   return false;
 }
 
+/**
+ * Kill all tray processes whose parent daemon is dead.
+ * This is more precise than pattern matching — it checks if the parent
+ * node process (the daemon) is still alive.
+ */
+function killOrphanTrayProcesses(): number {
+  let killed = 0;
+  try {
+    // Get all TrayIcon.ps1 processes excluding our own
+    const pids = getPsPids('TrayIcon.ps1');
+    for (const trayPid of pids) {
+      try {
+        // Get parent PID via CIM
+        const parent = runPs(
+          'get-ciminstance win32_process | where-object { $_.processid -eq ' +
+          trayPid + ' } | select-object -expandproperty parentprocessid',
+        ).trim();
+        const parentPid = parseInt(parent, 10);
+        if (isNaN(parentPid) || parentPid === 0) continue; // init/system parent
+        // Check if parent is an agent-attention daemon
+        const parentCmd = runPs(
+          'get-ciminstance win32_process | where-object { $_.processid -eq ' +
+          parentPid + ' } | select-object -expandproperty commandline',
+        ).trim();
+        if (parentCmd.includes('daemon.js') && parentCmd.includes('agent-attention')) {
+          if (isProcessRunning(parentPid)) continue; // parent alive — not orphan
+        }
+        // Parent is dead or not a daemon — this is an orphan
+        try { process.kill(trayPid, 'SIGTERM'); killed++; } catch {}
+      } catch {}
+    }
+  } catch {
+    // fallback: just kill all matching pids
+    for (const pid of getPsPids('TrayIcon.ps1')) {
+      try { process.kill(pid, 'SIGTERM'); killed++; } catch {}
+    }
+  }
+  if (killed > 0) console.log(`Killed ${killed} orphan tray process(es)`);
+  return killed;
+}
+
 function isProcessRunning(pid: number): boolean {
   try {
     process.kill(pid, 0); // throws if not found
@@ -132,7 +176,7 @@ function startDaemon(): void {
   // Try PID file first (exact), then fall back to pattern match
   let staleKilled = 0;
   if (killTrayByPid()) staleKilled++;
-  staleKilled += killStaleTrayProcesses();
+  staleKilled += killOrphanTrayProcesses();
 
   // Clean up stale lock/pid files
   try { fs.unlinkSync(LOCK_FILE); } catch { /* ignore */ }
@@ -214,7 +258,7 @@ function stopDaemon(graceful: boolean = true): void {
   }
 
   // Always clean up stale tray processes
-  killStaleTrayProcesses();
+  killOrphanTrayProcesses();
   clearPid();
   try { fs.unlinkSync(LOCK_FILE); } catch { /* ignore */ }
 }
