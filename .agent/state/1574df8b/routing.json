@@ -1,0 +1,19 @@
+{
+  "flow_name": "Minimal",
+  "gates": {
+    "G_ci": "required",
+    "G_stop": "required",
+    "G_risk": "skipped",
+    "G_permission": "skipped",
+    "G_hitl": "skipped",
+    "G_understanding": "skipped"
+  },
+  "roles": [
+    "Developer"
+  ],
+  "risk_signals": [
+    "blast_radius_score=low",
+    "production_repo=no",
+    "adr_count=0"
+  ]
+}

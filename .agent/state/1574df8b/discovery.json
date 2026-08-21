@@ -1,0 +1,36 @@
+{
+  "project": "D:\\Projects\\Active\\agent-attention",
+  "language_primary": "typescript",
+  "framework": "node-cli",
+  "package_files": [
+    "package.json"
+  ],
+  "entry_points": [
+    "src/index.ts",
+    "skills/agent-attention/skill.md"
+  ],
+  "existing_agent_config": [],
+  "harness": "claude-code",
+  "blast_radius_score": "low",
+  "production_repo": "no",
+  "multi_collaborator": "no",
+  "multi_agent": "no",
+  "irreversible_resources": [],
+  "ci_surface": "none",
+  "ci_workflows": [],
+  "pre_push_hook": "no",
+  "doc_files": [],
+  "adr_count": 0,
+  "adr_latest": null,
+  "phase_contracts": 0,
+  "verification_reports": 0,
+  "manual_enrichment": {
+    "description": "MVP: Agent 通知 CLI + Windows Toast + 声音 + agent-attention Skill",
+    "tech_stack": "TypeScript / Node.js 22 / yargs / node-notifier / play-sound / js-yaml / jest",
+    "node_manager": "mise (v2026.8.5 windows-x64)",
+    "already_installed": {
+      "node": "v22.23.2",
+      "npm": "10.9.8"
+    }
+  }
+}

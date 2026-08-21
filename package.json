@@ -1,0 +1,50 @@
+{
+  "name": "agent-attention",
+  "version": "0.2.0",
+  "description": "Agent Attention Center v0.2 — TeamMind Runtime human attention projection layer",
+  "type": "commonjs",
+  "bin": {
+    "agent-notify": "./dist/index.js",
+    "agent-attention": "./dist/daemon-cli.js"
+  },
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "test": "jest --forceExit",
+    "prepare": "npm run build",
+    "bin:install": "npm run build && node dist/scripts/install-daemon.js",
+    "bin:uninstall": "npm run build && node dist/scripts/uninstall-daemon.js",
+    "start:daemon": "node dist/daemon.js",
+    "bin:agent": "node dist/daemon-cli.js"
+  },
+  "keywords": [
+    "agent",
+    "notification",
+    "cli",
+    "toast",
+    "attention"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "chokidar": "^3.6.0",
+    "js-yaml": "^4.1.0",
+    "node-notifier": "^10.0.1",
+    "play-sound": "^1.1.2",
+    "yargs": "^17.7.2"
+  },
+  "devDependencies": {
+    "@babel/core": "^8.0.1",
+    "@babel/preset-env": "^8.0.2",
+    "@babel/preset-typescript": "^8.0.1",
+    "@types/jest": "^29.5.14",
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^22.0.0",
+    "@types/yargs": "^17.0.33",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.2.5",
+    "typescript": "^5.6.0"
+  }
+}

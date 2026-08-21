@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.DS_Store
+*.log
+.env
+.claude/
+.superpowers/
+# .agent/ is project-local state; the 4 markdown files + 2 json files inside it ARE tracked
+.agent/*
+!.agent/state/
+!.agent/state/*/
+!.agent/state/*/*.md
+!.agent/state/*/*.json
