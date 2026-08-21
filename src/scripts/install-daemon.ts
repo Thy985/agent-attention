@@ -54,7 +54,16 @@ function main(): void {
   fs.writeFileSync(vbsPath, vbsContent, 'utf-8');
   console.log(`Installed startup hook: ${vbsPath}`);
 
-  // Kill any previous daemon instance before spawning a fresh one.
+  // Kill any previous daemon AND stale tray before spawning a fresh one.
+  const TRAY_PID_FILE = path.join(STATE_DIR, 'tray.pid');
+  try {
+    const trayPid = parseInt(fs.readFileSync(TRAY_PID_FILE, 'utf-8').trim(), 10);
+    if (!isNaN(trayPid)) {
+      try { process.kill(trayPid, 'SIGTERM'); } catch {}
+      console.log(`Killed stale tray (pid=${trayPid})`);
+    }
+  } catch { /* no tray PID file yet */ }
+
   try {
     const existingPid = parseInt(fs.readFileSync(PID_FILE, 'utf-8').trim(), 10);
     if (!isNaN(existingPid)) {

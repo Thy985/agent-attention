@@ -32,6 +32,7 @@ describe('daemon (file-polling architecture)', () => {
     powerShellPath: 'powershell',
     trayScriptPath: 'src/center/TrayIcon.ps1',
     trayStatePath: path.join(dir, 'tray-state.json'),
+    trayPidPath:   path.join(dir, 'tray.pid'),
     cliPath:       path.join(dir, 'daemon-cli.js'),
     debug:         false,
   });
@@ -41,6 +42,7 @@ describe('daemon (file-polling architecture)', () => {
     const opts = makeOptions(tmpDir);
     options.statePath     = opts.statePath;
     options.trayStatePath = opts.trayStatePath;
+    options.trayPidPath   = opts.trayPidPath;
     options.cliPath       = opts.cliPath;
     mockedSpawn.mockClear();
   });

@@ -18,12 +18,12 @@ function runPs(script: string, timeoutMs = 5000): string {
   }
 }
 
-/** Get PowerShell.exe PIDs whose exe path contains the given pattern (PS5.1-safe). */
+/** Get PowerShell.exe PIDs whose command line contains the given pattern (PS5.1-safe). */
 function getPsPids(pattern: string): number[] {
   try {
     const out = runPs(
       'get-ciminstance win32_process | where-object { $_.name -eq ' +
-      "'powershell.exe' -and $_.path -like '*" + pattern + "*' } " +
+      "'powershell.exe' -and $_.commandline -like '*" + pattern + "*' } " +
       '| select-object -expandproperty processid',
     );
     return out.trim().split('\n').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n));
@@ -33,6 +33,7 @@ function getPsPids(pattern: string): number[] {
 const STATE_DIR = path.join(os.homedir(), '.agent-attention');
 const PID_FILE = path.join(STATE_DIR, 'daemon.pid');
 const LOCK_FILE = path.join(STATE_DIR, 'daemon.lock');
+const TRAY_PID_FILE = path.join(STATE_DIR, 'tray.pid');
 const STATE_PATH = path.join(STATE_DIR, 'state.json');
 const STARTUP_DIR = path.join(
   process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'),
@@ -73,6 +74,24 @@ function clearPid(): void {
   }
 }
 
+/** Read tray PID from file. Returns null if missing or invalid. */
+function readTrayPid(): number | null {
+  try {
+    const raw = fs.readFileSync(TRAY_PID_FILE, 'utf-8').trim();
+    const n = parseInt(raw, 10);
+    return isNaN(n) ? null : n;
+  } catch { return null; }
+}
+
+/** Kill the specific tray process tracked by tray.pid. Returns true if killed. */
+function killTrayByPid(): boolean {
+  const pid = readTrayPid();
+  if (pid && isProcessRunning(pid)) {
+    try { process.kill(pid, 'SIGTERM'); return true; } catch {}
+  }
+  return false;
+}
+
 function isProcessRunning(pid: number): boolean {
   try {
     process.kill(pid, 0); // throws if not found
@@ -109,6 +128,12 @@ function startDaemon(): void {
     return;
   }
 
+  // Kill any stale tray left by a crashed previous daemon (issue #1)
+  // Try PID file first (exact), then fall back to pattern match
+  let staleKilled = 0;
+  if (killTrayByPid()) staleKilled++;
+  staleKilled += killStaleTrayProcesses();
+
   // Clean up stale lock/pid files
   try { fs.unlinkSync(LOCK_FILE); } catch { /* ignore */ }
   clearPid();
@@ -137,21 +162,20 @@ function startDaemon(): void {
 
 /**
  * Kill all stale tray processes left by previous daemon instances.
- * Returns the number of processes killed.
+ * Uses get-ciminstance (PS5.1-safe). Returns the number of processes killed.
  */
 function killStaleTrayProcesses(): number {
   let killed = 0;
   try {
     const pids = getPsPids('TrayIcon.ps1');
     for (const pid of pids) {
-      try { process.kill(pid, 'SIGTERM'); } catch {}
+      try { process.kill(pid, 'SIGTERM'); killed++; } catch {}
     }
-    killed = pids.length;
     if (killed > 0) {
       console.log(`Killed ${killed} stale tray process(es)`);
     }
   } catch {
-    // WMI may not be available
+    // process query may fail on restricted systems
   }
   return killed;
 }
@@ -249,14 +273,20 @@ function doctor(): void {
   const pid = readPid();
   if (pid && isProcessRunning(pid)) daemonInstances = 1;
 
-  try {
-    const out = runPs(
-      'get-ciminstance win32_process | where-object { $_.name -eq ' +
-      "'powershell.exe' -and $_.commandline -like '*TrayIcon.ps1*' } " +
-      '| select-object -expandproperty processid',
-    );
-    trayInstances = out.trim().split('\n').filter(Boolean).length;
-  } catch { trayInstances = 0; }
+  // Try PID file first (exact match, no CIM needed)
+  const trayPid = readTrayPid();
+  if (trayPid && isProcessRunning(trayPid)) trayInstances = 1;
+  else {
+    // Fall back to get-ciminstance pattern match
+    try {
+      const out = runPs(
+        'get-ciminstance win32_process | where-object { $_.name -eq ' +
+        "'powershell.exe' -and $_.commandline -like '*TrayIcon.ps1*' } " +
+        '| select-object -expandproperty processid',
+      );
+      trayInstances = out.trim().split('\n').filter(Boolean).length;
+    } catch { trayInstances = 0; }
+  }
 
   const checks = [
     {

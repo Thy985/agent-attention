@@ -10,6 +10,7 @@ export interface DaemonOptions {
   powerShellPath: string;
   trayScriptPath: string;
   trayStatePath: string;   // polling file written by daemon, read by TrayIcon.ps1
+  trayPidPath: string;     // PID file for tray lifecycle management
   cliPath: string;         // absolute path to daemon-cli.js (for tray double-click)
   debug?: boolean;
 }
@@ -20,6 +21,25 @@ export interface Daemon {
 
 const TRAY_STATE_POLL_MS = 1000;
 const PID_CHECK_INTERVAL_MS = 5000;
+
+/** Read tray PID from file. Returns null if missing or invalid. */
+function readTrayPid(trayPidPath: string): number | null {
+  try {
+    const raw = fs.readFileSync(trayPidPath, 'utf-8').trim();
+    const n = parseInt(raw, 10);
+    return isNaN(n) ? null : n;
+  } catch { return null; }
+}
+
+/** Write tray PID to file. */
+function writeTrayPid(trayPidPath: string, pid: number): void {
+  fs.writeFileSync(trayPidPath, String(pid), 'utf-8');
+}
+
+/** Remove tray PID file. */
+function clearTrayPid(trayPidPath: string): void {
+  try { fs.unlinkSync(trayPidPath); } catch {}
+}
 
 export function createDaemon(options: DaemonOptions): Daemon {
   let trayProc: ChildProcess | null = null;
@@ -88,25 +108,31 @@ export function createDaemon(options: DaemonOptions): Daemon {
 
   const spawnTray = () => {
     log(`spawning tray: ${options.powerShellPath} ${options.trayScriptPath}`);
-    trayProc = spawn(
-      options.powerShellPath,
-      [
+    const trayArgs = [
         '-NoProfile',
         '-ExecutionPolicy', 'Bypass',
         '-File', options.trayScriptPath,
         '-StatePath', options.statePath,
         '-CliPath', options.cliPath,
-      ],
+      ];
+    if (options.trayPidPath) trayArgs.push('-TrayPidPath', options.trayPidPath);
+
+    trayProc = spawn(
+      options.powerShellPath,
+      trayArgs,
       {
-        // NO stdin/stdout pipes — tray polls tray-state.json file directly.
         stdio: ['ignore', 'ignore', 'pipe'],
         windowsHide: true,
         detached: false,
       },
     );
 
+    // Write PID file so orphan cleanup can target this exact process (issue #1)
+    writeTrayPid(options.trayPidPath, trayProc.pid!);
+
     trayProc.on('exit', (code) => {
       log(`tray process exited with code ${code}`);
+      clearTrayPid(options.trayPidPath);
       if (!stopped) {
         setTimeout(() => {
           if (!stopped) spawnTray();
@@ -163,6 +189,7 @@ export function createDaemon(options: DaemonOptions): Daemon {
         try { trayProc.kill('SIGTERM'); } catch {}
         trayProc = null;
       }
+      clearTrayPid(options.trayPidPath);
       // Clean up polling file so TrayIcon's loop exits
       try { fs.unlinkSync(options.trayStatePath); } catch {}
     },
@@ -177,6 +204,7 @@ if (require.main === module) {
   const stateDir = path.join(home, '.agent-attention');
   const statePath    = path.join(stateDir, 'state.json');
   const trayStatePath = path.join(stateDir, 'tray-state.json');
+  const trayPidPath   = path.join(stateDir, 'tray.pid');
   const trayScriptPath = path.join(__dirname, '..', 'src', 'center', 'TrayIcon.ps1');
   const cliPath        = path.join(__dirname, '..', 'dist', 'daemon-cli.js');
 
@@ -186,12 +214,24 @@ if (require.main === module) {
     powerShellPath: 'powershell',
     trayScriptPath,
     trayStatePath,
+    trayPidPath,
     cliPath,
     debug,
   });
 
   process.on('SIGTERM', () => daemon.stop().then(() => process.exit(0)));
   process.on('SIGINT',  () => daemon.stop().then(() => process.exit(0)));
+
+  // On crash, clean up tray PID file so next start knows there's no active tray
+  process.on('uncaughtException', () => {
+    try { fs.unlinkSync(trayPidPath); } catch {}
+    try { fs.unlinkSync(trayStatePath); } catch {}
+    process.exit(1);
+  });
+  process.on('beforeExit', () => {
+    try { fs.unlinkSync(trayPidPath); } catch {}
+    try { fs.unlinkSync(trayStatePath); } catch {}
+  });
 
   console.error(`[daemon] started, watching ${statePath}`);
   console.error(`[daemon] tray polling file: ${trayStatePath}`);

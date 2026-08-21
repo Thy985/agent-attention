@@ -7,8 +7,9 @@
 #             [-StatePath <path>] [-CliPath <path>]
 
 param(
-    [string]$StatePath  = "$env:USERPROFILE\.agent-attention\state.json",
-    [string]$CliPath    = ""
+    [string]$StatePath   = "$env:USERPROFILE\.agent-attention\state.json",
+    [string]$CliPath     = "",
+    [string]$TrayPidPath = ""   # path to tray.pid file (written by daemon, read on exit)
 )
 
 Add-Type -AssemblyName System.Windows.Forms
@@ -285,6 +286,14 @@ function Invoke-Exit {
         $script:notifyIcon.Visible = $false
         $script:notifyIcon.Dispose()
         $script:notifyIcon = $null
+    }
+    # Clean up PID file and polling state so next spawn starts fresh (issue #1, secondary)
+    if ($TrayPidPath -and (Test-Path $TrayPidPath)) {
+        try { Remove-Item $TrayPidPath -Force -ErrorAction SilentlyContinue } catch {}
+    }
+    # Also remove our local temp copy of tray-state.json if present
+    if ($script:trayStatePath -and (Test-Path $script:trayStatePath)) {
+        try { Remove-Item $script:trayStatePath -Force -ErrorAction SilentlyContinue } catch {}
     }
     if ($Graceful) {
         [System.Windows.Forms.Application]::Exit()
