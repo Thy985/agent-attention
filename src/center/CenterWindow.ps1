@@ -532,7 +532,7 @@ while ($script:_centerRefreshing -and $window -and -not $window.IsDisposed) {
                                 param($s, $e)
                                 $e.Handled = $true
                                 if ($evCliPath) {
-                                    try { Start-Process $env:AGENT_ATTENTION_NODE -ArgumentList "$evCliPath", 'mark-read', $evId -WindowStyle Hidden -ErrorAction SilentlyContinue } catch {}
+                                    try { Start-Process $env:AGENT_ATTENTION_NODE -ArgumentList "$evCliPath", 'mark-event', $evId -WindowStyle Hidden -ErrorAction SilentlyContinue } catch {}
                                 }
                                 $s.Parent.RemoveChild($s)
                             }.GetNewClosure()) | Out-Null

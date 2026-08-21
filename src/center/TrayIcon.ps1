@@ -327,8 +327,6 @@ function Invoke-Exit {
 #   2. state file gone — daemon deleted tray-state.json (graceful stop)
 #   3. parent dead    — daemon.pid lost (daemon crashed/killed externally)
 # ---------------------------------------------------------------------------
-[Console]::TreatInputLineAsCommandLine = $false
-
 # Ctrl+C → set stopSignal so polling loop exits → Invoke-Exit hides icon
 $ctrlHandler = {
     param($s, $e)
@@ -347,10 +345,10 @@ function Test-TrayShouldExit {
         $daemonPidPath = Join-Path $stateDir 'daemon.pid'
         if (-not (Test-Path $daemonPidPath)) { return $true }
         try {
-            $pid = [int](Get-Content $daemonPidPath -Raw)
-            if ($pid -gt 0) {
+            $daemonPid = [int](Get-Content $daemonPidPath -Raw)
+            if ($daemonPid -gt 0) {
                 # Windows: use WMI to check liveness (no Get-Process .Handle access)
-                $alive = Get-CimInstance Win32_Process -Filter "ProcessId=$pid" -ErrorAction SilentlyContinue
+                $alive = Get-CimInstance Win32_Process -Filter "ProcessId=$daemonPid" -ErrorAction SilentlyContinue
                 if (-not $alive) { return $true }
             }
         } catch { return $true }

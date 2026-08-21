@@ -85,7 +85,19 @@ function atomicWrite(statePath: string, state: State): void {
   // even when multiple agent-notify invocations race.
   const tmpPath = `${statePath}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
   fs.writeFileSync(tmpPath, JSON.stringify(state, null, 2), 'utf-8');
-  fs.renameSync(tmpPath, statePath);
+  try {
+    fs.renameSync(tmpPath, statePath);
+  } catch (err: any) {
+    // EPERM on Windows when another process (e.g. daemon with chokidar watch)
+    // holds the file open. Fall back to direct write — safe because we hold
+    // the file exclusively in this process.
+    if (err.code === 'EPERM' || err.code === 'EACCES') {
+      fs.writeFileSync(statePath, JSON.stringify(state, null, 2), 'utf-8');
+    } else {
+      throw err;
+    }
+  }
+  try { fs.unlinkSync(tmpPath); } catch {}
 }
 
 export function recordEvent(statePath: string, input: RecordEventInput): State {
@@ -107,7 +119,7 @@ export function recordEvent(statePath: string, input: RecordEventInput): State {
     updatedAt: input.timestamp,
     unreadCount: current.unreadCount + 1,
     events,
-    visible: events.length > 0, // show icon whenever events exist
+    visible: current.unreadCount + 1 > 0, // show icon when there are unread events
   };
   atomicWrite(statePath, next);
   return next;
@@ -122,7 +134,7 @@ export function clearUnread(statePath: string): State {
     updatedAt: Date.now(),
     unreadCount: 0,
     events,
-    visible: events.length > 0, // keep visible while events exist, even if all read
+    visible: 0 > 0, // hide icon when all events are read
   };
   atomicWrite(statePath, next);
   return next;
@@ -155,7 +167,7 @@ export function markRead(statePath: string, eventId: string): State {
     updatedAt: Date.now(),
     unreadCount: Math.max(0, current.unreadCount - 1),
     events,
-    visible: events.length > 0,
+    visible: Math.max(0, current.unreadCount - 1) > 0,
   };
   atomicWrite(statePath, next);
   return next;

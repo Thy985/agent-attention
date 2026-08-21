@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { execSync, spawn } from 'child_process';
 import { registerAgent, listAgents, getAgent, updateAgentTarget, AgentTarget } from './registry';
-import { clearUnread } from './state/AttentionState';
+import { clearUnread, markRead } from './state/AttentionState';
 
 /** Run a PowerShell script from a temp file to avoid shell escaping issues. */
 function runPs(script: string, timeoutMs = 5000): string {
@@ -165,18 +165,18 @@ function getStatus(): DaemonStatus {
 }
 
 function startDaemon(): void {
-  // Check if already running
+  // Always clean up stale tray processes first — they may belong to a
+  // crashed or previously-stopped daemon whose PID file was already removed.
+  let staleKilled = 0;
+  if (killTrayByPid()) staleKilled++;
+  staleKilled += killOrphanTrayProcesses();
+
+  // Check if already running (after cleanup)
   const existingPid = readPid();
   if (existingPid && isProcessRunning(existingPid)) {
     console.log(`Daemon already running (pid=${existingPid})`);
     return;
   }
-
-  // Kill any stale tray left by a crashed previous daemon (issue #1)
-  // Try PID file first (exact), then fall back to pattern match
-  let staleKilled = 0;
-  if (killTrayByPid()) staleKilled++;
-  staleKilled += killOrphanTrayProcesses();
 
   // Clean up stale lock/pid files
   try { fs.unlinkSync(LOCK_FILE); } catch { /* ignore */ }
@@ -409,6 +409,15 @@ function markAllRead(): void {
   console.log('All events marked as read.');
 }
 
+function markEvent(eventId: string): void {
+  if (!fs.existsSync(STATE_PATH)) {
+    console.log('No state file found.');
+    return;
+  }
+  markRead(STATE_PATH, eventId);
+  console.log(`Event ${eventId} marked as read.`);
+}
+
 function printAgents(): void {
   const agents = listAgents();
   if (agents.length === 0) {
@@ -461,6 +470,7 @@ function main(): void {
     console.log('  daemon restart   Restart the daemon');
     console.log('  daemon status    Show daemon status');
     console.log('  mark-all-read    Mark all events as read');
+    console.log('  mark-event <id>  Mark a single event as read');
     console.log('  agent register <id> <name>  Register an agent');
     console.log('  agent list                           List all agents');
     console.log('  agent target set <id> --pid <n>      Set target terminal pid');
@@ -485,6 +495,13 @@ function main(): void {
     }
   } else if (command === 'mark-all-read') {
     markAllRead();
+  } else if (command === 'mark-event') {
+    const eventId = args[1];
+    if (!eventId) {
+      console.log('Usage: agent-attention mark-event <event-id>');
+      process.exit(1);
+    }
+    markEvent(eventId);
   } else if (command === 'doctor') {
     doctor();
   } else if (command === 'agent') {
