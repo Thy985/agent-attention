@@ -6,6 +6,7 @@ import { registerAgent, listAgents, getAgent, updateAgentTarget, AgentTarget } f
 
 const STATE_DIR = path.join(os.homedir(), '.agent-attention');
 const PID_FILE = path.join(STATE_DIR, 'daemon.pid');
+const LOCK_FILE = path.join(STATE_DIR, 'daemon.lock');
 const STATE_PATH = path.join(STATE_DIR, 'state.json');
 const STARTUP_DIR = path.join(
   process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'),
@@ -63,13 +64,13 @@ function getStatus(): DaemonStatus {
   // Use WMI (Get-CimInstance) for cross-version compatibility
   let trayRunning = false;
   try {
-    const output = execSync(
-      'powershell -NoProfile -Command "' +
-      'Get-CimInstance Win32_Process | ' +
-      'Where-Object { $_.Name -eq \'powershell.exe\' -and $_.CommandLine -like \'*TrayIcon.ps1*\' } | ' +
-      'Select-Object -ExpandProperty ProcessId -First 1"'
-      , { encoding: 'utf-8', timeout: 5000 }
-    );
+    const trayScript = [
+      '$p = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq \'powershell.exe\' -and $_.CommandLine -like \'*TrayIcon*\' } | Select-Object -ExpandProperty ProcessId -First 1',
+      'if ($p) { Write-Host $p }',
+    ].join('; ');
+    const output = execSync(`powershell -NoProfile -Command "${trayScript}"`, {
+      encoding: 'utf-8', timeout: 5000,
+    });
     trayRunning = output.trim().length > 0;
   } catch {
     // WMI may not be available — default to false
@@ -82,6 +83,17 @@ function getStatus(): DaemonStatus {
 }
 
 function startDaemon(): void {
+  // Check if already running
+  const existingPid = readPid();
+  if (existingPid && isProcessRunning(existingPid)) {
+    console.log(`Daemon already running (pid=${existingPid})`);
+    return;
+  }
+
+  // Clean up stale lock/pid files
+  try { fs.unlinkSync(LOCK_FILE); } catch { /* ignore */ }
+  clearPid();
+
   // Use cwd to resolve paths — works whether run from project dir or global install
   const distDaemon = path.join(process.cwd(), 'dist', 'daemon.js');
   if (!fs.existsSync(distDaemon)) {
@@ -103,10 +115,38 @@ function startDaemon(): void {
   console.log(`Daemon started (pid=${daemon.pid})`);
 }
 
+/**
+ * Kill all stale tray processes left by previous daemon instances.
+ * Returns the number of processes killed.
+ */
+function killStaleTrayProcesses(): number {
+  let killed = 0;
+  try {
+    const psScript = [
+      '$procs = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq \'powershell.exe\' -and $_.CommandLine -like \'*TrayIcon*\' }',
+      'foreach ($p in $procs) { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue; Write-Host $p.ProcessId }',
+    ].join('; ');
+    const output = execSync(`powershell -NoProfile -Command "${psScript}"`, {
+      encoding: 'utf-8',
+      timeout: 10000,
+    });
+    const pids = output.trim().split('\n').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n));
+    killed = pids.length;
+    if (killed > 0) {
+      console.log(`Killed ${killed} stale tray process(es)`);
+    }
+  } catch {
+    // WMI may not be available
+  }
+  return killed;
+}
+
 function stopDaemon(graceful: boolean = true): void {
   const pid = readPid();
   if (!pid) {
     console.log('Daemon is not running');
+    // Still clean up stale tray processes
+    killStaleTrayProcesses();
     return;
   }
 
@@ -116,10 +156,9 @@ function stopDaemon(graceful: boolean = true): void {
       // Wait briefly for graceful shutdown (up to 5 seconds)
       const deadline = Date.now() + 5000;
       while (isProcessRunning(pid) && Date.now() < deadline) {
-        // busy-wait using setTimeout (Node.js doesn't have process.sleep)
         const now = Date.now();
         while (Date.now() - now < 100 && isProcessRunning(pid) && Date.now() < deadline) {
-          // spin for 100ms
+          // spin
         }
       }
       if (isProcessRunning(pid)) {
@@ -131,9 +170,14 @@ function stopDaemon(graceful: boolean = true): void {
     } catch (err) {
       console.error(`Failed to stop daemon: ${err}`);
     }
+  } else {
+    console.log('Daemon was not running (stale PID file)');
   }
 
+  // Always clean up stale tray processes
+  killStaleTrayProcesses();
   clearPid();
+  try { fs.unlinkSync(LOCK_FILE); } catch { /* ignore */ }
 }
 
 function status(): void {
@@ -174,13 +218,39 @@ function status(): void {
 
 function restart(): void {
   stopDaemon();
-  setTimeout(() => startDaemon(), 500);
+  // Wait for cleanup before starting
+  setTimeout(() => startDaemon(), 1000);
 }
 
 function doctor(): void {
   console.log('Agent Attention Doctor');
   console.log('======================');
   console.log('');
+
+  // Count running daemon and tray instances
+  let daemonInstances = 0;
+  let trayInstances = 0;
+  try {
+    const daemonScript = [
+      '$count = (Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like \'*daemon.js*\' -and $_.CommandLine -like \'*agent-attention*\'} | Measure-Object).Count',
+      'Write-Host $count',
+    ].join('; ');
+    const out = execSync(`powershell -NoProfile -Command "${daemonScript}"`, {
+      encoding: 'utf-8', timeout: 5000,
+    });
+    daemonInstances = parseInt(out.trim(), 10) || 0;
+  } catch { daemonInstances = 0; }
+
+  try {
+    const trayScript = [
+      '$count = (Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like \'*TrayIcon*\' } | Measure-Object).Count',
+      'Write-Host $count',
+    ].join('; ');
+    const out = execSync(`powershell -NoProfile -Command "${trayScript}"`, {
+      encoding: 'utf-8', timeout: 5000,
+    });
+    trayInstances = parseInt(out.trim(), 10) || 0;
+  } catch { trayInstances = 0; }
 
   const checks = [
     {
@@ -217,6 +287,16 @@ function doctor(): void {
       name: 'Daemon PID',
       ok: false,
       detail: 'N/A',
+    },
+    {
+      name: 'Daemon instances',
+      ok: daemonInstances <= 1,
+      detail: `${daemonInstances} instance(s)`,
+    },
+    {
+      name: 'Tray instances',
+      ok: trayInstances <= 1,
+      detail: `${trayInstances} instance(s)`,
     },
   ];
 

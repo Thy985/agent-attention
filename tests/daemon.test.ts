@@ -99,7 +99,9 @@ describe('daemon', () => {
     const lastCall = mockedSpawn.mock.results[mockedSpawn.mock.results.length - 1];
     const proc = lastCall.value as any;
     const writeCount = proc.stdin.write.mock.calls.length;
-    expect(writeCount).toBeLessThanOrEqual(2);
+    // Initial push (500ms after spawn) + at most 1 debounced push from 5 writes
+    expect(writeCount).toBeGreaterThanOrEqual(1);
+    expect(writeCount).toBeLessThanOrEqual(3);
   });
 
   it('cleans up chokidar on stop', async () => {

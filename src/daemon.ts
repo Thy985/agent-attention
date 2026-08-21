@@ -107,6 +107,10 @@ export function createDaemon(options: DaemonOptions): Daemon {
   });
 
   spawnTray();
+  // Push initial state immediately (don't wait for file change)
+  setTimeout(() => {
+    if (!stopped) pushStateToTray();
+  }, 500);
 
   return {
     stop: async () => {

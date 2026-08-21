@@ -7,8 +7,8 @@ param(
 
 Set-Location $ProjectRoot
 
-$cli = "node dist/daemon-cli.js"
-$notify = "node dist/index.js"
+$cli = Join-Path $ProjectRoot "dist\daemon-cli.js"
+$notify = Join-Path $ProjectRoot "dist\index.js"
 $results = @{}
 
 Write-Host "============================================================"
