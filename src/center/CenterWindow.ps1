@@ -1,4 +1,4 @@
-# Agent Attention Center — Center Window (WPF)
+﻿# Agent Attention Center 鈥?Center Window (WPF)
 # Shows a popup window with agent-grouped events.
 # Usage: powershell -NoProfile -ExecutionPolicy Bypass -File CenterWindow.ps1
 #        [-StatePath <path>] [-RegistryPath <path>]
@@ -8,7 +8,7 @@ param(
     [string]$RegistryPath = "$env:USERPROFILE\.agent-attention\agents.json"
 )
 
-# ─── Helpers ──────────────────────────────────────────────────────────────────
+# 鈹€鈹€鈹€ Helpers 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 function Get-State {
     try {
         if (Test-Path $StatePath) {
@@ -41,11 +41,11 @@ function Get-ConnectionStatus {
     param([long]$lastSeenAt)
     $now = [DateTimeOffset]::Now.ToUnixTimeMilliseconds()
     $minsAgo = [math]::Floor(($now - $lastSeenAt) / 60000)
-    if ($minsAgo -lt 5) { return @{ status = 'connected'; label = '● Connected' } }
-    return @{ status = 'inactive'; label = "○ Last seen ${minsAgo}m ago" }
+    if ($minsAgo -lt 5) { return @{ status = 'connected'; label = '鈼?Connected' } }
+    return @{ status = 'inactive'; label = "鈼?Last seen ${minsAgo}m ago" }
 }
 
-# ─── Load data ────────────────────────────────────────────────────────────────
+# 鈹€鈹€鈹€ Load data 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 $state = Get-State
 $registry = Get-Registry
 
@@ -64,7 +64,7 @@ foreach ($ev in $state.events) {
     $agentGroups[$aid] += @($ev)
 }
 
-# ─── WPF setup ────────────────────────────────────────────────────────────────
+# 鈹€鈹€鈹€ WPF setup 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName PresentationFramework
@@ -138,7 +138,7 @@ if ($agentGroups.Count -eq 0) {
         $connStatus = if ($agentInfo.last_seen_at) {
             Get-ConnectionStatus $agentInfo.last_seen_at
         } else {
-            @{ status = 'inactive'; label = '○ Unknown' }
+            @{ status = 'inactive'; label = '鈼?Unknown' }
         }
 
         $agentHeaderPanel = New-Object System.Windows.Controls.StackPanel
@@ -194,7 +194,7 @@ if ($agentGroups.Count -eq 0) {
 
             # Separator
             $sep2 = New-Object System.Windows.Controls.TextBlock
-            $sep2.Text = '  ·  '
+            $sep2.Text = '  路  '
             $sep2.FontSize = 12
             $sep2.Foreground = (New-Object System.Windows.Media.SolidColorBrush(
                 [System.Windows.Media.ColorConverter]::ConvertFromString('#555555')))
@@ -226,7 +226,7 @@ if ($agentGroups.Count -eq 0) {
 
         if ($events.Count -gt 8) {
             $moreText = New-Object System.Windows.Controls.TextBlock
-            $moreText.Text = "  …and $($events.Count - 8) more"
+            $moreText.Text = "  鈥nd $($events.Count - 8) more"
             $moreText.FontSize = 10
             $moreText.Foreground = (New-Object System.Windows.Media.SolidColorBrush(
                 [System.Windows.Media.ColorConverter]::ConvertFromString('#666666')))
@@ -267,7 +267,7 @@ $markBtn.Add_Click({
     if (Test-Path $cliPath) {
         Start-Process node -ArgumentList $cliPath, 'daemon', 'restart' -WindowStyle Hidden
     }
-    $window.Close()
+    if ($window -and -not $window.IsDisposed) { try { $window.Close() } catch {} }
 })
 $btnPanel.Children.Add($markBtn) | Out-Null
 
@@ -281,7 +281,7 @@ $closeBtn.Background = (New-Object System.Windows.Media.SolidColorBrush(
 $closeBtn.Foreground = [System.Windows.Media.Brushes]::White
 $closeBtn.BorderBrush = (New-Object System.Windows.Media.SolidColorBrush(
     [System.Windows.Media.ColorConverter]::ConvertFromString('#555555')))
-$closeBtn.Add_Click({ $window.Close() })
+$closeBtn.Add_Click({ if ($window -and -not $window.IsDisposed) { try { if ($window -and -not $window.IsDisposed) { try { $window.Close() } catch {} } } catch {} } })
 $btnPanel.Children.Add($closeBtn) | Out-Null
 
 $stackPanel.Children.Add($btnPanel) | Out-Null
@@ -290,6 +290,7 @@ $scrollViewer.Content = $stackPanel
 $window.Content = $scrollViewer
 
 # Keyboard shortcut: Escape to close
-$window.Add_KeyDown({ if ($_.Key -eq 'Escape') { $window.Close() } })
+$window.Add_KeyDown({ if ($_.Key -eq 'Escape') { if ($window -and -not $window.IsDisposed) { try { $window.Close() } catch {} } } })
 
 $window.ShowDialog()
+
