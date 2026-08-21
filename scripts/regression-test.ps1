@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     agent-attention Known Issue Regression Suite
 .DESCRIPTION
@@ -52,7 +52,7 @@ $allGood = $true
 foreach ($f in $ps1Files) {
     $c = Get-Content $f -Raw
     if ($c -match '::new\(') {
-        Write-Host "  $f: 仍有 ::new()"
+        Write-Host "  ${f}: 仍有 ::new()"
         $allGood = $false
     }
 }
