@@ -164,12 +164,64 @@ function getStatus(): DaemonStatus {
   return { running, pid, trayRunning, stateValid, startupHook };
 }
 
+/** Get PIDs of all running agent-attention daemon node processes. */
+function getDaemonPids(): number[] {
+  try {
+    const out = runPs(
+      "get-ciminstance win32_process | where-object { " +
+      "$_.name -eq 'node.exe' -and $_.commandline -like '*daemon.js*' " +
+      "-and $_.commandline -like '*agent-attention*' " +
+      `-and $_.processid -ne ${process.pid} } ` +
+      '| select-object -expandproperty processid',
+    );
+    return out.trim().split('\n').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n));
+  } catch { return []; }
+}
+
+function killExistingDaemon(): void {
+  const pids = getDaemonPids();
+  for (const pid of pids) {
+    try {
+      console.log(`Killing existing daemon pid=${pid}`);
+      process.kill(pid, 'SIGTERM');
+    } catch {}
+  }
+  // Also kill their tray children
+  for (const pid of pids) {
+    try {
+      runPs(
+        `get-ciminstance win32_process | where-object { ` +
+        `$_ .name -eq 'powershell.exe' -and $_ .parentprocessid -eq ${pid} ` +
+        `-and $_ .commandline -like '*TrayIcon.ps1*' } | ` +
+        'foreach-object { stop-process -id $_ .processid -force }',
+      );
+    } catch {}
+  }
+}
+
 function startDaemon(): void {
   // Always clean up stale tray processes first — they may belong to a
   // crashed or previously-stopped daemon whose PID file was already removed.
   let staleKilled = 0;
   if (killTrayByPid()) staleKilled++;
   staleKilled += killOrphanTrayProcesses();
+
+  // Kill any existing daemon processes (by process scan, not just PID file)
+  // This handles the case where the PID file was removed but the daemon is
+  // still running (e.g. crashed without cleanup).
+  const existingPids = getDaemonPids();
+  if (existingPids.length > 0) {
+    console.log(`Found ${existingPids.length} existing daemon process(es), killing...`);
+    killExistingDaemon();
+    // Wait for them to die
+    let waited = 0;
+    while (getDaemonPids().length > 0 && waited < 3000) {
+      // spin-wait
+      waited += 100;
+    }
+    // Clean up any remaining orphan trays
+    killOrphanTrayProcesses();
+  }
 
   // Check if already running (after cleanup)
   const existingPid = readPid();
