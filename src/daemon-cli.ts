@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { execSync, spawn } from 'child_process';
 import { registerAgent, listAgents, getAgent, updateAgentTarget, AgentTarget } from './registry';
+import { clearUnread } from './state/AttentionState';
 
 const STATE_DIR = path.join(os.homedir(), '.agent-attention');
 const PID_FILE = path.join(STATE_DIR, 'daemon.pid');
@@ -318,6 +319,15 @@ function doctor(): void {
   console.log(allOk ? 'All checks passed!' : 'Some checks failed. Run agent-attention daemon restart to fix.');
 }
 
+function markAllRead(): void {
+  if (!fs.existsSync(STATE_PATH)) {
+    console.log('No state file found.');
+    return;
+  }
+  clearUnread(STATE_PATH);
+  console.log('All events marked as read.');
+}
+
 function printAgents(): void {
   const agents = listAgents();
   if (agents.length === 0) {
@@ -369,6 +379,7 @@ function main(): void {
     console.log('  daemon stop      Stop the daemon');
     console.log('  daemon restart   Restart the daemon');
     console.log('  daemon status    Show daemon status');
+    console.log('  mark-all-read    Mark all events as read');
     console.log('  agent register <id> <name>  Register an agent');
     console.log('  agent list                           List all agents');
     console.log('  agent target set <id> --pid <n>      Set target terminal pid');
@@ -391,6 +402,8 @@ function main(): void {
         console.log(`Unknown daemon subcommand: ${subcommand}`);
         process.exit(1);
     }
+  } else if (command === 'mark-all-read') {
+    markAllRead();
   } else if (command === 'doctor') {
     doctor();
   } else if (command === 'agent') {

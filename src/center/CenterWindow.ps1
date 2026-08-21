@@ -1,4 +1,4 @@
-﻿# Agent Attention Center 鈥?Center Window (WPF)
+# Agent Attention Center 鈥?Center Window (WPF)
 # Shows a popup window with agent-grouped events.
 # Usage: powershell -NoProfile -ExecutionPolicy Bypass -File CenterWindow.ps1
 #        [-StatePath <path>] [-RegistryPath <path>]
@@ -7,6 +7,19 @@ param(
     [string]$StatePath = "$env:USERPROFILE\.agent-attention\state.json",
     [string]$RegistryPath = "$env:USERPROFILE\.agent-attention\agents.json"
 )
+
+# Single-instance protection: only one Center window allowed
+$mutexName = "Global\agent-attention-center-" + [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+$mutex = New-Object System.Threading.Mutex($false, $mutexName)
+$acquired = $false
+try {
+    $acquired = $mutex.WaitOne(0, $true)
+} catch {}
+if (-not $acquired) {
+    Write-Warning "Another Center window is already open."
+    exit 0
+}
+trap { $mutex.ReleaseMutex(); break }
 
 # 鈹€鈹€鈹€ Helpers 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 function Get-State {
@@ -262,10 +275,10 @@ $markBtn.Foreground = [System.Windows.Media.Brushes]::White
 $markBtn.BorderBrush = (New-Object System.Windows.Media.SolidColorBrush(
     [System.Windows.Media.ColorConverter]::ConvertFromString('#555555')))
 $markBtn.Add_Click({
-    # Call the CLI to clear all
+    # Call the CLI to mark all as read
     $cliPath = Join-Path $PSScriptRoot '..\..\dist\daemon-cli.js'
     if (Test-Path $cliPath) {
-        Start-Process node -ArgumentList $cliPath, 'daemon', 'restart' -WindowStyle Hidden
+        Start-Process node -ArgumentList $cliPath, 'mark-all-read' -WindowStyle Hidden -ErrorAction SilentlyContinue
     }
     if ($window -and -not $window.IsDisposed) { try { $window.Close() } catch {} }
 })

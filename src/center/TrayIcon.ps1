@@ -1,4 +1,4 @@
-﻿# Agent Attention Center 鈥?Tray Icon (PowerShell + WinForms)
+# Agent Attention Center 鈥?Tray Icon (PowerShell + WinForms)
 # Usage:
 #   TrayIcon.ps1 show                    # start persistent NotifyIcon
 #   TrayIcon.ps1 exit                    # close icon and exit
@@ -127,7 +127,7 @@ function Start-Tray {
     $script:NotifyIcon.Add_DoubleClick({
         $cliPath = Join-Path $PSScriptRoot '..\..\dist\daemon-cli.js'
         if (Test-Path $cliPath) {
-            Start-Process node -ArgumentList $cliPath, 'daemon', 'mark-all-read' -WindowStyle Hidden -ErrorAction SilentlyContinue
+            Start-Process node -ArgumentList $cliPath, 'mark-all-read' -WindowStyle Hidden -ErrorAction SilentlyContinue
         }
         $script:CurrentState.unreadCount = 0
         $script:CurrentState.events = @($script:CurrentState.events | ForEach-Object { $_.read = $true; $_ })
