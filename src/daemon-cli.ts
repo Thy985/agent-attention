@@ -243,22 +243,18 @@ function doctor(): void {
   console.log('');
 
   // Count running daemon and tray instances (issue #14: get-ciminstance, PS5.1-safe)
+  // Daemon: check PID file + liveness (avoids self-match from doctor process)
   let daemonInstances = 0;
   let trayInstances = 0;
-  try {
-    const out = runPs(
-      "get-ciminstance win32_process | where-object { $_.name -eq 'node.exe' " +
-      "-and $_.commandline -like '*daemon.js*' -and $_.commandline -like '*agent-attention*' } " +
-      "| select-object -expandproperty processid",
-    );
-    daemonInstances = out.trim().split('\n').filter(Boolean).length;
-  } catch { daemonInstances = 0; }
+  const pid = readPid();
+  if (pid && isProcessRunning(pid)) daemonInstances = 1;
 
   try {
     const out = runPs(
-      "get-ciminstance win32_process | where-object { $_.name -eq 'powershell.exe' " +
-      "-and $_.path -like '*TrayIcon.ps1*' } " +
-      "| select-object -expandproperty processid",
+      'get-ciminstance win32_process ' +
+      "| where-object { `$_ .Name -eq 'powershell.exe' -and " +
+      "`$_ .Path -like '*TrayIcon.ps1*' } " +
+      '| select-object -expandproperty ProcessId',
     );
     trayInstances = out.trim().split('\n').filter(Boolean).length;
   } catch { trayInstances = 0; }
