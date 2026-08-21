@@ -22,7 +22,7 @@ $before = (Get-CimInstance Win32_Process -Filter "Name='Code.exe'" | Measure-Obj
 & $cli doctor 2>&1 | Out-Null
 Start-Sleep 1
 $after = (Get-CimInstance Win32_Process -Filter "Name='Code.exe'" | Measure-Object).Count
-$results["R1"] = $after -ge $before
+$results["R1"] = $after -le $before
 Write-Host "  Code: $before -> $after $(if($results["R1"]){'PASS'}else{'FAIL'})"
 
 # R2: Single instance check
@@ -78,7 +78,7 @@ $before = (Get-CimInstance Win32_Process -Filter "Name='Code.exe'" | Measure-Obj
 & $notify completed "test" 2>&1 | Out-Null
 Start-Sleep 1
 $after = (Get-CimInstance Win32_Process -Filter "Name='Code.exe'" | Measure-Object).Count
-$results["R6"] = $after -ge $before
+$results["R6"] = $after -le $before
 Write-Host "  Code: $before -> $after $(if($results["R6"]){'PASS'}else{'FAIL'})"
 
 Write-Host ""

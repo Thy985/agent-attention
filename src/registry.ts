@@ -132,9 +132,13 @@ export function listAgents(): Agent[] {
 /**
  * Auto-detect agent from environment and register if needed.
  * Returns agent_id (used for dedup and state recording).
+ *
+ * Per v0.3 spec §3 principle 2: Agent auto-discovery via process scanning
+ * or env-guessing is prohibited. We only honor explicitly set AGENT_ID /
+ * AGENT_NAME environment variables. No other detection happens here.
  */
 export function autoDetectAndRegister(): string {
-  // Try environment variables first
+  // Only honor explicitly-set environment variables — no guessing.
   const envAgentId = process.env.AGENT_ID;
   const envAgentName = process.env.AGENT_NAME;
 
@@ -142,38 +146,7 @@ export function autoDetectAndRegister(): string {
     return registerAgent(envAgentId, envAgentName || envAgentId).agent_id;
   }
 
-  // Detect from process name / Claude Code pattern
-  const detectedId = detectAgentId();
-  const detectedName = detectAgentName();
-
-  if (detectedId) {
-    return registerAgent(detectedId, detectedName).agent_id;
-  }
-
-  // Fallback to generic agent
+  // No environment set — return generic fallback. The agent must self-register
+  // via `agent-attention agent register <id> <name>` to appear in the registry.
   return registerAgent('agent', 'Agent').agent_id;
-}
-
-function detectAgentId(): string | null {
-  // Check for known agent environments
-  if (process.env.CLAUDE_CODE) return 'claude-code';
-  if (process.env.CODEx) return 'codex';
-  if (process.env.OPENAI_WORKERS) return 'openai-agents';
-
-  // Check process title (limited but better than nothing)
-  const exe = process.execPath?.toLowerCase() || '';
-  if (exe.includes('claude')) return 'claude-code';
-  if (exe.includes('codex')) return 'codex';
-
-  return null;
-}
-
-function detectAgentName(): string {
-  const id = detectAgentId();
-  const names: Record<string, string> = {
-    'claude-code': 'Claude Code',
-    codex: 'Codex',
-    'openai-agents': 'OpenAI Agents',
-  };
-  return id ? (names[id] || id) : 'Agent';
 }

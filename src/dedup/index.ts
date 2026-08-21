@@ -7,10 +7,11 @@ const DEDUP_TTL_MS = 30_000;
 const seen = new Map<string, number>();
 
 /**
- * Compute a hash key for deduplication: hash(agent:event:message).
+ * Compute a hash key for deduplication: hash(JSON.stringify([agent,event,message])).
+ * Using JSON.stringify avoids separator-collision bugs (e.g. "a:b:c" vs "a:b:c" parsed differently).
  */
 function makeKey(agent: string, event: string, message: string): string {
-  return crypto.createHash('sha1').update(`${agent}:${event}:${message}`).digest('hex');
+  return crypto.createHash('sha1').update(JSON.stringify([agent, event, message])).digest('hex');
 }
 
 /**

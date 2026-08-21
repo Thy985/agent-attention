@@ -35,10 +35,9 @@ export function jumpToTarget(target: AgentTarget | null): void {
         }
       `;
 
-    // Use spawnSync with explicit process.execPath to bypass .ps1 file association
-    // which may be hijacked by VS Code/Codex (prevents accidental editor launch)
-    spawnSync(process.execPath, [
-      'powershell', '-NoProfile', '-Command', psCode.replace(/\n/g, ' '),
+    // Use spawnSync with explicit 'powershell' — process.execPath is Node, not PS.
+    spawnSync('powershell', [
+      '-NoProfile', '-Command', psCode.replace(/\n/g, ' '),
     ], { timeout: 5000, stdio: 'ignore', windowsHide: true });
   } catch (err) {
     console.warn(`[agent-attention] jump to PID ${target.pid} failed: ${err}`);

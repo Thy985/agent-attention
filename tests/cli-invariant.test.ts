@@ -5,7 +5,8 @@
  * VS Code (Code.exe) or other editor processes to launch.
  *
  * Root cause: .ps1 file association hijacked by VS Code/Codex.
- * Fix: Use spawnSync with explicit process.execPath path.
+ * Fix: Use spawn with explicit 'powershell' command (NOT process.execPath,
+ *      which is Node.exe and cannot run PowerShell scripts).
  */
 
 import { spawnSync } from 'child_process';
@@ -45,17 +46,21 @@ describe('CLI Invariant: no unexpected editor launches', () => {
     expect(after).toBeLessThanOrEqual(before);
   });
 
-  it('should use spawnSync, not execSync (regression guard)', () => {
+  it('should use spawn with explicit powershell (not process.execPath)', () => {
     const fs = require('fs');
     const src = fs.readFileSync('src/jump.ts', 'utf8');
-    expect(src).toContain('spawnSync(process.execPath');
+    // Must use spawnSync('powershell', ...) — NOT spawnSync(process.execPath, ...)
+    expect(src).toContain("spawnSync('powershell'");
+    expect(src).not.toContain('spawnSync(process.execPath');
     expect(src).not.toContain('execSync(`powershell');
   });
 
-  it('should use spawn, not exec in win32.ts (regression guard)', () => {
+  it('should use spawn with explicit powershell in win32.ts (not process.execPath)', () => {
     const fs = require('fs');
     const src = fs.readFileSync('src/notification/win32.ts', 'utf8');
-    expect(src).toContain('spawn(process.execPath');
+    // Must use spawn('powershell', ...) — NOT spawn(process.execPath, ...)
+    expect(src).toContain("spawn('powershell'");
+    expect(src).not.toContain('spawn(process.execPath');
     expect(src).not.toContain('exec(`powershell');
   });
 });

@@ -9,9 +9,9 @@ const APP_NAME = 'Agent Attention';
  * Throws on permanent failure so the caller can decide how to surface it.
  *
  * Sound strategy:
- * - All events: use node-notifier's built-in sound (atomic with Toast)
- * - P0 events: also fire SystemSounds asynchronously for louder emphasis
- *   (executed in parallel, doesn't block Toast return)
+ * - P0 (urgent): fires two loud system sounds asynchronously via PowerShell
+ *   (Asterisk + Hand) so the user cannot miss them.
+ * - P1/P2: relies on snoretoast's built-in sound (atomic with Toast).
  */
 export async function notify(
   event: EventName,
@@ -26,8 +26,10 @@ export async function notify(
       {
         title: `${APP_NAME}: ${event}`,
         message,
-        // node-notifier built-in sound fires synchronously with Toast appearance
-        sound: soundEnabled,
+        // For P0 we don't play a toast sound here because the PowerShell
+        // fire-and-forget below plays louder system sounds. For P1/P2 we
+        // let snoretoast emit its default notification sound.
+        sound: isUrgent ? false : soundEnabled ? 'Notification.Default' : false,
         wait: false,
       },
       (error: Error | null) => {
@@ -40,7 +42,7 @@ export async function notify(
     );
   });
 
-  // --- Additional loud system sound for urgent events (fire-and-forget) ---
+  // --- Additional loud system sounds for urgent events (fire-and-forget) ---
   // Uses async exec so it doesn't block CLI exit; the sound plays in parallel
   // with the Toast, eliminating perceptible delay.
   if (soundEnabled && isUrgent) {
@@ -56,10 +58,9 @@ function playUrgentSoundAsync(): void {
   try {
     const { spawn } = require('child_process');
     const soundScript = '[System.Media.SystemSounds]::Asterisk.Play(); [System.Media.SystemSounds]::Hand.Play()';
-    // Use spawn with explicit process.execPath to bypass .ps1 file association
-    // which may be hijacked by VS Code/Codex (prevents accidental editor launch)
-    spawn(process.execPath, [
-      'powershell', '-NoProfile', '-Command', soundScript,
+    // Use spawn with explicit 'powershell' — process.execPath is Node, not PS.
+    spawn('powershell', [
+      '-NoProfile', '-Command', soundScript,
     ], { windowsHide: true });
     // Fire-and-forget — swallow errors silently; sound is best-effort
   } catch {

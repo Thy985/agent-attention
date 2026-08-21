@@ -31,4 +31,14 @@ describe('shouldNotify', () => {
     shouldNotify('claude', 'completed', 'message A');
     expect(shouldNotify('claude', 'completed', 'message B')).toBe(true);
   });
+
+  // B4 regression: separator-collision test
+  it('does not confuse agent:event:message containing colons (no cross-event suppression)', () => {
+    // These two keys are semantically distinct but could collide with naive ':' splitting:
+    //   "a:b:c" vs "a:b:c" — same string but parsed differently
+    // With JSON.stringify-based keys this cannot happen.
+    shouldNotify('a:b', 'c', 'd');          // key = ["a:b","c","d"]
+    expect(shouldNotify('a', 'b:c', 'd')).toBe(true); // key = ["a","b:c","d"] — different
+    expect(shouldNotify('a', 'b', 'c:d')).toBe(true); // key = ["a","b","c:d"] — different
+  });
 });

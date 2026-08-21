@@ -5,6 +5,33 @@ import { execSync, spawn } from 'child_process';
 import { registerAgent, listAgents, getAgent, updateAgentTarget, AgentTarget } from './registry';
 import { clearUnread } from './state/AttentionState';
 
+/** Run a PowerShell script from a temp file to avoid shell escaping issues. */
+function runPs(script: string, timeoutMs = 5000): string {
+  const tmp = path.join(os.tmpdir(), `ps-${Date.now()}.ps1`);
+  fs.writeFileSync(tmp, script, 'utf-8');
+  try {
+    return execSync(`powershell -NoProfile -ExecutionPolicy Bypass -File "${tmp}"`, {
+      encoding: 'utf-8', timeout: timeoutMs,
+    }).toString();
+  } finally {
+    try { fs.unlinkSync(tmp); } catch {}
+  }
+}
+
+/** Get PowerShell.exe process IDs matching a path pattern (no CommandLine needed). */
+function getPsPids(pattern: string): number[] {
+  try {
+    const nl = '\n';
+    const script =
+      '$p = Get-Process -Name powershell -ErrorAction SilentlyContinue |' + nl +
+      ` Where-Object { $_.Path -like '*${pattern}*' } |` + nl +
+      ' Select-Object -ExpandProperty Id' + nl +
+      'if ($p) { $p -join \"`n\" }';
+    const out = runPs(script);
+    return out.trim().split('\n').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n));
+  } catch { return []; }
+}
+
 const STATE_DIR = path.join(os.homedir(), '.agent-attention');
 const PID_FILE = path.join(STATE_DIR, 'daemon.pid');
 const LOCK_FILE = path.join(STATE_DIR, 'daemon.lock');
@@ -61,20 +88,13 @@ function getStatus(): DaemonStatus {
   const pid = readPid();
   const running = pid !== null && isProcessRunning(pid);
 
-  // Check if tray process exists (powershell running TrayIcon.ps1)
-  // Use WMI (Get-CimInstance) for cross-version compatibility
+  // Check if tray process exists via Get-Process (issue #14: CIM/WMI can be disabled)
   let trayRunning = false;
   try {
-    const trayScript = [
-      '$p = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq \'powershell.exe\' -and $_.CommandLine -like \'*TrayIcon*\' } | Select-Object -ExpandProperty ProcessId -First 1',
-      'if ($p) { Write-Host $p }',
-    ].join('; ');
-    const output = execSync(`powershell -NoProfile -Command "${trayScript}"`, {
-      encoding: 'utf-8', timeout: 5000,
-    });
-    trayRunning = output.trim().length > 0;
+    const pids = getPsPids('TrayIcon.ps1');
+    trayRunning = pids.length > 0;
   } catch {
-    // WMI may not be available — default to false
+    trayRunning = false;
   }
 
   const stateValid = fs.existsSync(STATE_PATH);
@@ -95,8 +115,9 @@ function startDaemon(): void {
   try { fs.unlinkSync(LOCK_FILE); } catch { /* ignore */ }
   clearPid();
 
-  // Use cwd to resolve paths — works whether run from project dir or global install
-  const distDaemon = path.join(process.cwd(), 'dist', 'daemon.js');
+  // Use __dirname (not process.cwd()) so paths resolve correctly regardless
+  // of where the user runs the CLI from (important for global npm installs).
+  const distDaemon = path.join(__dirname, '..', 'dist', 'daemon.js');
   if (!fs.existsSync(distDaemon)) {
     console.error('Daemon not built. Run: npm run build');
     console.error(`Expected: ${distDaemon}`);
@@ -123,15 +144,10 @@ function startDaemon(): void {
 function killStaleTrayProcesses(): number {
   let killed = 0;
   try {
-    const psScript = [
-      '$procs = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq \'powershell.exe\' -and $_.CommandLine -like \'*TrayIcon*\' }',
-      'foreach ($p in $procs) { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue; Write-Host $p.ProcessId }',
-    ].join('; ');
-    const output = execSync(`powershell -NoProfile -Command "${psScript}"`, {
-      encoding: 'utf-8',
-      timeout: 10000,
-    });
-    const pids = output.trim().split('\n').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n));
+    const pids = getPsPids('TrayIcon.ps1');
+    for (const pid of pids) {
+      try { process.kill(pid, 'SIGTERM'); } catch {}
+    }
     killed = pids.length;
     if (killed > 0) {
       console.log(`Killed ${killed} stale tray process(es)`);
@@ -228,28 +244,26 @@ function doctor(): void {
   console.log('======================');
   console.log('');
 
-  // Count running daemon and tray instances
+  // Count running daemon and tray instances (issue #14: use Get-Process by path)
   let daemonInstances = 0;
   let trayInstances = 0;
   try {
-    const daemonScript = [
-      '$count = (Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like \'*daemon.js*\' -and $_.CommandLine -like \'*agent-attention*\'} | Measure-Object).Count',
+    const out = runPs([
+      '$count = (Get-Process -Name node -ErrorAction SilentlyContinue |',
+      " Where-Object { `$_.Path -like '*daemon.js*' -and `$_.Path -like '*agent-attention*' } |",
+      ' Measure-Object).Count',
       'Write-Host $count',
-    ].join('; ');
-    const out = execSync(`powershell -NoProfile -Command "${daemonScript}"`, {
-      encoding: 'utf-8', timeout: 5000,
-    });
+    ].join('\n'));
     daemonInstances = parseInt(out.trim(), 10) || 0;
   } catch { daemonInstances = 0; }
 
   try {
-    const trayScript = [
-      '$count = (Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like \'*TrayIcon*\' } | Measure-Object).Count',
+    const out = runPs([
+      '$count = (Get-Process -Name powershell -ErrorAction SilentlyContinue |',
+      " Where-Object { `$_.Path -like '*TrayIcon.ps1*' } |",
+      ' Measure-Object).Count',
       'Write-Host $count',
-    ].join('; ');
-    const out = execSync(`powershell -NoProfile -Command "${trayScript}"`, {
-      encoding: 'utf-8', timeout: 5000,
-    });
+    ].join('\n'));
     trayInstances = parseInt(out.trim(), 10) || 0;
   } catch { trayInstances = 0; }
 
@@ -261,12 +275,12 @@ function doctor(): void {
     },
     {
       name: 'Daemon',
-      ok: fs.existsSync(path.join(process.cwd(), 'dist', 'daemon.js')),
+      ok: fs.existsSync(path.join(__dirname, '..', 'dist', 'daemon.js')),
       detail: 'dist/daemon.js exists',
     },
     {
       name: 'Tray script',
-      ok: fs.existsSync(path.join(process.cwd(), 'src', 'center', 'TrayIcon.ps1')),
+      ok: fs.existsSync(path.join(__dirname, '..', 'src', 'center', 'TrayIcon.ps1')),
       detail: 'src/center/TrayIcon.ps1 exists',
     },
     {

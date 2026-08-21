@@ -1,98 +1,163 @@
-# Agent Attention Center 鈥?Tray Icon (PowerShell + WinForms)
-# Usage:
-#   TrayIcon.ps1 show                    # start persistent NotifyIcon
-#   TrayIcon.ps1 exit                    # close icon and exit
+# Agent Attention Center — Tray Icon (PowerShell + WinForms)
 #
-# Stdin protocol (one JSON object per line): each line replaces current state.
+# Architecture: daemon writes tray-state.json → TrayIcon polls + pumps messages.
+#
+# Usage:
+#   powershell -WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -File TrayIcon.ps1
+#             [-StatePath <path>] [-CliPath <path>]
 
 param(
-    [Parameter(Mandatory=$true)][ValidateSet('show','exit')][string]$Command
+    [string]$StatePath  = "$env:USERPROFILE\.agent-attention\state.json",
+    [string]$CliPath    = ""
 )
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
-$script:NotifyIcon = $null
-$script:CurrentState = @{ unreadCount = 0; events = @() }
+# ---------------------------------------------------------------------------
+# Single-instance mutex (issue #2)
+# ---------------------------------------------------------------------------
+$userId   = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+$mutexName = "Local\agent-attention-tray-" + $userId.Replace('\', '_')
+$mutex     = New-Object System.Threading.Mutex($false, $mutexName)
+$acquired  = $false
+try {
+    $acquired = $mutex.WaitOne(0, $true)
+} catch {}
+if (-not $acquired) {
+    Write-Warning "Another TrayIcon is already running."
+    exit 0
+}
+trap { $mutex.ReleaseMutex(); break }
 
-function Update-Icon {
-    param($State)
-    $script:CurrentState = $State
+$script:notifyIcon      = $null
+$script:currentState    = @{ unreadCount = 0; events = @() }
+$script:stopSignal      = $false
+$script:lastMenuVisible = $false   # track whether context menu is open
+$script:clickTimestamp  = 0         # for double-click debounce (issue #8)
 
-    $totalUnread = ($script:CurrentState.events | Where-Object { -not $_.read }).Count
-    $text = if ($totalUnread -gt 0) { "[$totalUnread]" } else { "[0]" }
-    $script:NotifyIcon.Text = "Agent Attention: $text"
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
-    # Create colored icon: red=has unread, green=none
-    $iconColor = if ($totalUnread -gt 0) {
+function Get-IconColor {
+    param($Unread)
+    if ($Unread -gt 0) {
         [System.Drawing.Color]::FromArgb(220, 50, 50)
     } else {
         [System.Drawing.Color]::FromArgb(50, 160, 80)
     }
+}
+
+function Build-IconBitmap {
+    param($Unread, $Color)
     $bmp = New-Object System.Drawing.Bitmap(16, 16)
-    $g = [System.Drawing.Graphics]::FromImage($bmp)
-    $g.Clear($iconColor)
-    # Draw white notification badge number if unread
-    if ($totalUnread -gt 0) {
+    $g   = [System.Drawing.Graphics]::FromImage($bmp)
+    $g.Clear($Color)
+    if ($Unread -gt 0) {
         $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::None
-        $font = New-Object System.Drawing.Font("Arial", 8, [System.Drawing.FontStyle]::Bold)
+        $font  = New-Object System.Drawing.Font("Arial", 8, [System.Drawing.FontStyle]::Bold)
         $brush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::White)
-        $numStr = if ($totalUnread -gt 9) { "+" } else { "$totalUnread" }
+        $numStr = if ($Unread -gt 9) { "+" } else { "$Unread" }
         $size = $g.MeasureString($numStr, $font)
         $x = [Math]::Max(0, [Math]::Floor((16 - $size.Width) / 2))
         $y = [Math]::Max(0, [Math]::Floor((16 - $size.Height) / 2))
         $g.DrawString($numStr, $font, $brush, $x, $y)
-        $font.Dispose()
-        $brush.Dispose()
+        $font.Dispose(); $brush.Dispose()
     }
     $g.Dispose()
-    $oldIcon = $script:NotifyIcon.Icon
-    $script:NotifyIcon.Icon = [System.Drawing.Icon]::FromHandle($bmp.GetHicon())
-    $bmp.Dispose()
-    if ($oldIcon) { $oldIcon.Dispose() }
+    return $bmp
+}
 
-    # Build context menu
+function Update-NotifyIcon {
+    param($State)
+    $script:currentState = $State
+    $totalUnread = ($State.events | Where-Object { -not $_.read }).Count
+    $badge       = if ($totalUnread -gt 0) { "[$totalUnread]" } else { "[0]" }
+    $script:notifyIcon.Text = "Agent Attention: $badge"
+
+    $iconColor = Get-IconColor $totalUnread
+    $bmp       = Build-IconBitmap $totalUnread $iconColor
+    $newIcon   = [System.Drawing.Icon]::FromHandle($bmp.GetHicon())
+
+    $oldIcon = $script:notifyIcon.Icon
+    $script:notifyIcon.Icon = $newIcon
+    $bmp.Dispose()
+    # Only dispose if it's OURS (not a shared SystemIcon) — issue #13
+    if ($oldIcon -and $oldIcon -ne [System.Drawing.SystemIcons]::Application) {
+        $oldIcon.Dispose()
+    }
+}
+
+function Mark-EventRead {
+    param($EventId, $Cli)
+    if (-not $Cli) { return }
+    try {
+        $cliDir = Split-Path $Cli -Parent
+        $exe    = if ($env:AGENT_ATTENTION_NODE) { $env:AGENT_ATTENTION_NODE } else { "node" }
+        Start-Process $exe -ArgumentList $Cli, 'mark-event', $EventId -WindowStyle Hidden -ErrorAction SilentlyContinue | Out-Null
+    } catch {}
+}
+
+function Build-ContextMenu {
+    param($State, $Cli)
+
     $menu = New-Object System.Windows.Forms.ContextMenuStrip
 
+    # Header
     $header = New-Object System.Windows.Forms.ToolStripMenuItem
-    $header.Text = "Agent Attention"
+    $header.Text    = "Agent Attention"
     $header.Enabled = $false
     $menu.Items.Add($header) | Out-Null
     $menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 
-    # Open Center
-    $openCenter = New-Object System.Windows.Forms.ToolStripMenuItem
-    $openCenter.Text = 'Open Center'
-    $openCenter.Add_Click({
+    # Open Center — forward StatePath and RegistryPath (issue #10)
+    $openItem = New-Object System.Windows.Forms.ToolStripMenuItem
+    $openItem.Text = "Open Center"
+    $openItem.Add_Click({
+        param($s, $e)
         $centerPath = Join-Path $PSScriptRoot 'CenterWindow.ps1'
-        Start-Process powershell -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$centerPath`"" -WindowStyle Normal
+        $args = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$centerPath`"")
+        # Forward paths so Center reads the same data as tray
+        if ($using:StatePath)  { $args += '-StatePath',  $using:StatePath }
+        if ($using:CliPath) {
+            $stateDir = Split-Path $using:StatePath -Parent
+            $args += '-RegistryPath', (Join-Path $stateDir 'agents.json')
+        }
+        Start-Process powershell -ArgumentList $args -WindowStyle Hidden
     }.GetNewClosure())
-    $menu.Items.Add($openCenter) | Out-Null
+    $menu.Items.Add($openItem) | Out-Null
     $menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 
-    # Event list
+    # Event list (max 10) — clicking marks read (issue #12)
     if (-not $State.events -or $State.events.Count -eq 0) {
         $empty = New-Object System.Windows.Forms.ToolStripMenuItem
-        $empty.Text = "(no events)"
+        $empty.Text    = "(no events)"
         $empty.Enabled = $false
         $menu.Items.Add($empty) | Out-Null
     } else {
         $maxItems = [math]::Min($State.events.Count, 10)
         for ($i = 0; $i -lt $maxItems; $i++) {
-            $ev = $State.events[$i]
-            $readMark = if ($ev.read) { "[R]" } else { "[!]" }
-            $agent = if ($ev.agent_name) { $ev.agent_name } elseif ($ev.agent_id) { $ev.agent_id } else { "agent" }
-            $shortMsg = if ($ev.message.Length -gt 30) { $ev.message.Substring(0, 30) + "..." } else { $ev.message }
-            $item = New-Object System.Windows.Forms.ToolStripMenuItem
-            $item.Text = "$readMark $agent : $shortMsg"
-            $item.Tag = $ev
+            $ev       = $State.events[$i]
+            $readMk   = if ($ev.read) { "[R]" } else { "[!]" }
+            $agent    = if ($ev.agent_name) { $ev.agent_name } elseif ($ev.agent_id) { $ev.agent_id } else { "agent" }
+            $shortMsg = if ($ev.message.Length -gt 28) { $ev.message.Substring(0, 28) + "..." } else { $ev.message }
+            $item     = New-Object System.Windows.Forms.ToolStripMenuItem
+            $item.Text = "$readMk $agent : $shortMsg"
+            $item.Tag  = $ev
             $item.Add_Click({
                 param($s, $e)
-                $ev = $s.Tag
-                $agentName = if ($ev.agent_name) { $ev.agent_name } elseif ($ev.agent_id) { $ev.agent_id } else { "agent" }
-                $readStatus = if ($ev.read) { "Yes" } else { "No" }
-                $details = "Agent: $agentName`nType: $($ev.type)`nMessage: $($ev.message)`nPriority: $($ev.priority)`nRead: $readStatus"
-                [System.Windows.Forms.MessageBox]::Show($details, "Agent Attention", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+                $ev       = $s.Tag
+                $agentNm  = if ($ev.agent_name) { $ev.agent_name } elseif ($ev.agent_id) { $ev.agent_id } else { "agent" }
+                $readSt   = if ($ev.read) { "Yes" } else { "No" }
+                # Mark as read via CLI (issue #12)
+                Mark-EventRead $ev.id $using:CliPath
+                $details  = "Agent: $agentNm`nType: $($ev.type)`nMessage: $($ev.message)`nPriority: $($ev.priority)`nRead: $readSt"
+                [System.Windows.Forms.MessageBox]::Show(
+                    $details, "Agent Attention",
+                    [System.Windows.Forms.MessageBoxButtons]::OK,
+                    [System.Windows.Forms.MessageBoxIcon]::Information
+                )
             }.GetNewClosure())
             $menu.Items.Add($item) | Out-Null
         }
@@ -100,64 +165,191 @@ function Update-Icon {
 
     $menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 
+    # Exit
     $exitItem = New-Object System.Windows.Forms.ToolStripMenuItem
     $exitItem.Text = "Exit"
     $exitItem.Add_Click({
-        $script:NotifyIcon.Visible = $false
+        param($s, $e)
+        $script:notifyIcon.Visible = $false
+        $script:stopSignal = $true
         [System.Windows.Forms.Application]::Exit()
     }.GetNewClosure())
     $menu.Items.Add($exitItem) | Out-Null
 
-    $script:NotifyIcon.ContextMenuStrip = $menu
+    # Rebuild menu when it closes (issue #11)
+    $menu.Add_Opening({
+        $script:lastMenuVisible = $true
+    }) | Out-Null
+    $menu.Add_Closed({
+        param($s, $e)
+        $script:lastMenuVisible = $false
+        # Rebuild with latest state so menu is always fresh
+        if ($script:notifyIcon) {
+            $stateJson = Get-Content $script:trayStatePath -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+            if ($stateJson) {
+                try {
+                    $fresh = $stateJson | ConvertFrom-Json
+                    $script:currentState = $fresh
+                    Update-NotifyIcon $fresh
+                    $script:notifyIcon.ContextMenuStrip = Build-ContextMenu $fresh $using:CliPath
+                } catch {}
+            }
+        }
+    }) | Out-Null
+
+    $menu
 }
 
+# ---------------------------------------------------------------------------
+# Left-click → Open Center  (debounced to avoid double-trigger on dbl-click)
+# Double-click → mark-all-read
+# ---------------------------------------------------------------------------
+
 function Start-Tray {
-    $script:NotifyIcon = New-Object System.Windows.Forms.NotifyIcon
-    $script:NotifyIcon.Icon = [System.Drawing.SystemIcons]::Application
-    $script:NotifyIcon.Visible = $true
-    $script:NotifyIcon.ContextMenuStrip = $null
-
-    # Left-click: open center window
-    $script:NotifyIcon.Add_Click({
-        $centerPath = Join-Path $PSScriptRoot 'CenterWindow.ps1'
-        Start-Process powershell -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$centerPath`"" -WindowStyle Normal
-    }.GetNewClosure())
-
-    # Double-click: mark all read
-    $script:NotifyIcon.Add_DoubleClick({
-        $cliPath = Join-Path $PSScriptRoot '..\..\dist\daemon-cli.js'
-        if (Test-Path $cliPath) {
-            Start-Process node -ArgumentList $cliPath, 'mark-all-read' -WindowStyle Hidden -ErrorAction SilentlyContinue
+    # Resolve CLI path — support AGENT_ATTENTION_NODE for global installs (issue #9)
+    $cliExe  = $env:AGENT_ATTENTION_NODE ?? "node"
+    $cliPath = $CliPath
+    if (-not $cliPath -or -not (Test-Path $cliPath)) {
+        $candidate = Join-Path $PSScriptRoot '..\..\dist\daemon-cli.js'
+        if (Test-Path $candidate) { $cliPath = $candidate }
+        if (-not $cliPath -or -not (Test-Path $cliPath)) {
+            # Try relative to state dir (global install fallback)
+            $stateDir  = Split-Path $StatePath -Parent
+            $candidate = Join-Path $stateDir 'daemon-cli.js'
+            if (Test-Path $candidate) { $cliPath = $candidate }
         }
-        $script:CurrentState.unreadCount = 0
-        $script:CurrentState.events = @($script:CurrentState.events | ForEach-Object { $_.read = $true; $_ })
-        Update-Icon $script:CurrentState
-    }.GetNewClosure())
+    }
+    $script:cliPath = $cliPath
+    $script:trayStatePath = "$env:TEMP\agent-attention-tray-state.json"
 
-    # Read state JSON from stdin
-    $reader = New-Object System.IO.StreamReader([Console]::OpenStandardInput())
-    while ($true) {
-        $line = $reader.ReadLine()
-        if ($null -eq $line) { break }
+    # Create owned initial icon (never use SystemIcons — issue #13)
+    $initBmp  = Build-IconBitmap 0 (Get-IconColor 0)
+    $initIcon = [System.Drawing.Icon]::FromHandle($initBmp.GetHicon())
+    $initBmp.Dispose()
+
+    $script:notifyIcon = New-Object System.Windows.Forms.NotifyIcon
+    $script:notifyIcon.Icon       = $initIcon
+    $script:notifyIcon.Visible    = $true
+
+    # Left-click — open Center (issue #8: debounce to suppress spurious click on dbl-click)
+    $script:notifyIcon.Add_Click({
+        param($s, $e)
+        $now = [DateTime]::Now.Ticks
+        # Only act if this isn't part of a double-click (>250ms since last click)
+        if ($now - $script:clickTimestamp -gt 2500000) {
+            $centerPath = Join-Path $PSScriptRoot 'CenterWindow.ps1'
+            $args = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$centerPath`"" 
+                      , '-StatePath', $script:StatePath)
+            if ($script:cliPath) {
+                $stateDir = Split-Path $script:StatePath -Parent
+                $args += '-RegistryPath', (Join-Path $stateDir 'agents.json')
+            }
+            Start-Process powershell -ArgumentList $args -WindowStyle Hidden
+        }
+        $script:clickTimestamp = $now
+    }.GetNewClosure()) | Out-Null
+
+    # Double-click — mark all read (fires AFTER both clicks, so debounced click is suppressed by timestamp gap)
+    $script:notifyIcon.Add_DoubleClick({
+        param($s, $e)
+        if ($script:cliPath -and (Test-Path $script:cliPath)) {
+            try {
+                Start-Process $cliExe -ArgumentList $script:cliPath, 'mark-all-read' `
+                    -WindowStyle Hidden -ErrorAction SilentlyContinue | Out-Null
+            } catch {}
+        }
+        # Also local mark for immediate feedback
+        $script:currentState.unreadCount = 0
+        $script:currentState.events = @($script:currentState.events | ForEach-Object { $_.read = $true; $_ })
+        Update-NotifyIcon $script:currentState
+    }.GetNewClosure()) | Out-Null
+
+    # Initial context menu
+    $script:notifyIcon.ContextMenuStrip = Build-ContextMenu @{ unreadCount=0; events=@() } $script:cliPath
+
+    # Load initial state if available
+    if (Test-Path $StatePath) {
         try {
-            $state = $line | ConvertFrom-Json
-            Update-Icon $state
-        } catch [System.Exception] {
-            Write-Warning ("invalid state JSON: {0}" -f $_.Exception.Message)
+            $initial = Get-Content $StatePath -Raw -Encoding UTF8 | ConvertFrom-Json
+            Update-NotifyIcon $initial
+            $script:notifyIcon.ContextMenuStrip = Build-ContextMenu $initial $script:cliPath
+        } catch {
+            Write-Warning "Failed to read initial state: $_"
         }
     }
 }
 
 function Invoke-Exit {
-    if ($script:NotifyIcon) {
-        $script:NotifyIcon.Visible = $false
+    param($Graceful = $true)
+    if ($script:notifyIcon) {
+        $script:notifyIcon.Visible = $false
+        $script:notifyIcon.Dispose()
+        $script:notifyIcon = $null
+    }
+    if ($Graceful) {
         [System.Windows.Forms.Application]::Exit()
     }
 }
 
-switch ($Command) {
-    'show' { Start-Tray }
-    'exit' { Invoke-Exit }
+# ---------------------------------------------------------------------------
+# Signal handler — graceful shutdown on SIGTERM (issue #4)
+# ---------------------------------------------------------------------------
+[Console]::TreatInputLineAsCommandLine = $false
+Register-WinEvent = ${}  # placeholder; actual handling below
+
+# Trap SIGTERM / Ctrl+C
+$handler = {
+    param($sig)
+    Write-Host "[TrayIcon] received signal $sig — exiting" -ForegroundColor Yellow
+    $script:stopSignal = $true
 }
 
+# Console control event handler
+$consoleHandler = {
+    param($ctrlType)
+    if ($ctrlType -eq 1 -or $ctrlType -eq 15) {  # CTRL_CLOSE_EVENT or CTRL_LOGOFF_EVENT
+        $script:stopSignal = $true
+    }
+    return $false
+}
+$null = Register-ObjectEvent -InputObject (New-Object System.Management.Automation.PSConsoleHost) -EventName ControlC -Action $handler -ErrorAction SilentlyContinue 2>$null
 
+# ---------------------------------------------------------------------------
+# Polling loop — DO NOT exit on missing file (issue #3 fix)
+# ---------------------------------------------------------------------------
+
+Start-Tray
+
+# Ensure tray-state.json exists so polling loop doesn't break
+if (-not (Test-Path $script:trayStatePath)) {
+    @{ version=1; updatedAt=0; unreadCount=0; events=@() } | ConvertTo-Json -Depth 3 |
+        Set-Content $script:trayStatePath -Encoding UTF8
+}
+
+Write-Host "[TrayIcon] polling $script:trayStatePath" -ForegroundColor Green
+
+while (-not $script:stopSignal) {
+    # Pump Windows messages so Click/DoubleClick/ContextMenu callbacks fire
+    [System.Windows.Forms.Application]::DoEvents()
+
+    # Read state from file written by daemon
+    try {
+        if (Test-Path $script:trayStatePath) {
+            $newState = Get-Content $script:trayStatePath -Raw -Encoding UTF8 | ConvertFrom-Json
+            # Only rebuild menu when state actually changes AND menu is not visible (issue #11)
+            $oldJson  = ($script:currentState.events | ConvertTo-Json -Compress)
+            $newJson  = ($newState.events   | ConvertTo-Json -Compress)
+            if ($oldJson -ne $newJson -and -not $script:lastMenuVisible) {
+                Update-NotifyIcon $newState
+                $script:notifyIcon.ContextMenuStrip = Build-ContextMenu $newState $script:cliPath
+            }
+        }
+    } catch {
+        # Transient read error — ignore and retry next tick
+    }
+
+    Start-Sleep -Milliseconds 500
+}
+
+Invoke-Exit
+Write-Host "[TrayIcon] stopped." -ForegroundColor Yellow

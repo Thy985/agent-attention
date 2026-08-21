@@ -295,6 +295,51 @@ describe('AttentionState', () => {
       expect(reloaded.unreadCount).toBe(0);
       expect(reloaded.events[0].read).toBe(true);
     });
+
+    // B8 regression: calling markRead on an already-read event must be a no-op.
+    it('is idempotent — calling markRead on an already-read event does not decrement unreadCount', () => {
+      recordEvent(statePath, {
+        type: 'completed',
+        message: 'test',
+        timestamp: 1,
+        priority: 'P2',
+        agent_id: 'a',
+        agent_name: 'A',
+        title: 'A: completed',
+      });
+      const state = readState(statePath);
+      expect(state.unreadCount).toBe(1);
+
+      // Mark once — succeeds.
+      const first = require('../src/state/AttentionState').markRead(statePath, state.events[0].id);
+      expect(first.unreadCount).toBe(0);
+      expect(first.events[0].read).toBe(true);
+
+      // Mark again — must be a no-op; unreadCount stays at 0, not -1.
+      const second = require('../src/state/AttentionState').markRead(statePath, state.events[0].id);
+      expect(second.unreadCount).toBe(0);
+      expect(second.events[0].read).toBe(true);
+
+      const reloaded = readState(statePath);
+      expect(reloaded.unreadCount).toBe(0);
+    });
+
+    it('returns current state unchanged when eventId does not exist', () => {
+      recordEvent(statePath, {
+        type: 'completed',
+        message: 'test',
+        timestamp: 1,
+        priority: 'P2',
+        agent_id: 'a',
+        agent_name: 'A',
+        title: 'A: completed',
+      });
+      const state = readState(statePath);
+      expect(state.unreadCount).toBe(1);
+
+      const marked = require('../src/state/AttentionState').markRead(statePath, 'nonexistent-id');
+      expect(marked.unreadCount).toBe(1); // unchanged
+    });
   });
 
   describe('getEventsByAgent', () => {

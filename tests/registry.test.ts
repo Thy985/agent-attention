@@ -7,6 +7,7 @@ import {
   listAgents,
   updateAgentTarget,
   getAgentUnreadCount,
+  autoDetectAndRegister,
   AgentTarget,
 } from '../src/registry';
 import { recordEvent, readState } from '../src/state/AttentionState';
@@ -287,6 +288,48 @@ describe('Registry v2 with Target', () => {
         expect(agents.map((a) => a.agent_id)).toContain('a');
         expect(agents.map((a) => a.agent_id)).toContain('b');
       });
+    });
+  });
+
+  // B3 regression: autoDetectAndRegister must not scan process/execPath.
+  describe('autoDetectAndRegister (B3)', () => {
+    it('uses AGENT_ID env var when set', () => {
+      const original = process.env.AGENT_ID;
+      const originalName = process.env.AGENT_NAME;
+      try {
+        process.env.AGENT_ID = 'my-agent';
+        process.env.AGENT_NAME = 'My Agent';
+        const id = autoDetectAndRegister();
+        expect(id).toBe('my-agent');
+        const agent = getAgent('my-agent');
+        expect(agent).toBeDefined();
+        expect(agent!.name).toBe('My Agent');
+      } finally {
+        if (original === undefined) {
+          delete process.env.AGENT_ID;
+        } else {
+          process.env.AGENT_ID = original;
+        }
+        if (originalName === undefined) {
+          delete process.env.AGENT_NAME;
+        } else {
+          process.env.AGENT_NAME = originalName;
+        }
+      }
+    });
+
+    it('falls back to generic "agent" when no env var is set', () => {
+      const original = process.env.AGENT_ID;
+      try {
+        delete process.env.AGENT_ID;
+        delete process.env.AGENT_NAME;
+        const id = autoDetectAndRegister();
+        expect(id).toBe('agent');
+      } finally {
+        if (original !== undefined) {
+          process.env.AGENT_ID = original;
+        }
+      }
     });
   });
 });

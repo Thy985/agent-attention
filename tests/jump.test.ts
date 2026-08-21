@@ -1,4 +1,4 @@
-﻿import { jumpToTarget, AgentTarget } from '../src/jump';
+import { jumpToTarget, AgentTarget } from '../src/jump';
 
 describe('jumpToTarget', () => {
   let warnSpy: jest.SpyInstance;
@@ -40,10 +40,11 @@ describe('jumpToTarget', () => {
     expect(() => jumpToTarget(target)).not.toThrow();
   });
 
-  it('uses spawnSync with explicit process.execPath (regression guard)', () => {
-    // Verify the source uses spawnSync, not execSync
+  it('uses spawnSync with explicit powershell (not process.execPath)', () => {
+    // Verify the source uses spawnSync('powershell', ...) — NOT process.execPath
     const fs = require('fs');
     const src = fs.readFileSync('src/jump.ts', 'utf8');
-    expect(src).toContain('spawnSync(process.execPath');
+    expect(src).toContain("spawnSync('powershell'");
+    expect(src).not.toContain('spawnSync(process.execPath');
   });
 });

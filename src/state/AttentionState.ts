@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as crypto from 'crypto';
+import * as os from 'os';
 
 export type EventName = 'completed' | 'permission_required' | 'input_required' | 'failed';
 export type EventPriority = 'P0' | 'P1' | 'P2';
@@ -51,8 +52,8 @@ export function readState(statePath: string): State {
     const actualUnread = parsed.events.filter((e: StateEvent) => !e.read).length;
     if (actualUnread !== parsed.unreadCount) {
       parsed.unreadCount = actualUnread;
-      // Rewrite with corrected count
-      const tmpPath = `${statePath}.tmp`;
+      // Rewrite with corrected count using a unique tmp name to avoid concurrent races.
+      const tmpPath = `${statePath}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
       fs.writeFileSync(tmpPath, JSON.stringify(parsed, null, 2), 'utf-8');
       fs.renameSync(tmpPath, statePath);
     }
@@ -71,7 +72,10 @@ function generateEventId(timestamp: number): string {
 }
 
 function atomicWrite(statePath: string, state: State): void {
-  const tmpPath = `${statePath}.tmp`;
+  // Use a per-write random tmp name to avoid concurrent-writer collisions.
+  // renameSync is atomic on Windows (same volume), so the pattern is safe
+  // even when multiple agent-notify invocations race.
+  const tmpPath = `${statePath}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
   fs.writeFileSync(tmpPath, JSON.stringify(state, null, 2), 'utf-8');
   fs.renameSync(tmpPath, statePath);
 }
@@ -127,13 +131,18 @@ export function clearAll(statePath: string): State {
 
 export function markRead(statePath: string, eventId: string): State {
   const current = readState(statePath);
+  const event = current.events.find((e) => e.id === eventId);
+  // If the event is already read (or missing), do not decrement unreadCount again.
+  if (!event || event.read) {
+    return current;
+  }
   const events = current.events.map((e) =>
     e.id === eventId ? { ...e, read: true } : e,
   );
   const next: State = {
     ...current,
     updatedAt: Date.now(),
-    unreadCount: Math.max(0, current.unreadCount - 1),
+    unreadCount: current.unreadCount - 1,
     events,
   };
   atomicWrite(statePath, next);

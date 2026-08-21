@@ -5,57 +5,66 @@ import { execSync } from 'child_process';
 
 /**
  * Remove startup hook + kill running daemon.
- * Best-effort kill — uses tasklist/taskkill to find and terminate daemon.
+ *
+ * Fixed issues:
+ * - Uses .vbs (consistent with install-daemon.ts) instead of .lnk
+ * - Kills ONLY the daemon process (by PID file), NOT all node.exe processes
  */
 
 const STARTUP_DIR = path.join(
   process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'),
   'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup',
 );
-const LINK_NAME = 'agent-attention.lnk';
+const STARTUP_NAME = 'agent-attention';
+const STATE_DIR    = path.join(os.homedir(), '.agent-attention');
+const PID_FILE     = path.join(STATE_DIR, 'daemon.pid');
 
 function main(): void {
-  const cmdPath = path.join(STARTUP_DIR, LINK_NAME);
-
-  if (fs.existsSync(cmdPath)) {
-    fs.unlinkSync(cmdPath);
-    console.log(`Removed startup hook: ${cmdPath}`);
+  // 1. Remove startup hook (.vbs — same name install-daemon.ts writes)
+  const vbsPath = path.join(STARTUP_DIR, `${STARTUP_NAME}.vbs`);
+  if (fs.existsSync(vbsPath)) {
+    fs.unlinkSync(vbsPath);
+    console.log(`Removed startup hook: ${vbsPath}`);
   } else {
-    console.log(`No startup hook found at ${cmdPath} (already uninstalled?)`);
+    console.log(`No startup hook found at ${vbsPath} (already uninstalled?)`);
   }
 
-  if (process.platform === 'win32') {
-    // Use tasklist to find node processes running daemon.js
-    try {
-      const output = execSync('tasklist /FI "IMAGENAME eq node.exe" /FO CSV /NH', { encoding: 'utf-8' });
-      const lines = output.trim().split('\n');
-      let killed = 0;
-      for (const line of lines) {
-        // CSV format: ["node.exe","1234","Console","12345",...]
-        const parts = line.split(',');
-        if (parts.length >= 2) {
-          const pid = parseInt(parts[1].replace(/"/g, ''), 10);
-          if (!isNaN(pid)) {
-            try {
-              // Try to match by command line or just kill by PID (conservative)
-              execSync(`taskkill /PID ${pid} /F`, { timeout: 1000 });
-              killed++;
-            } catch (e) {
-              // Might be owned by another user, skip
-            }
-          }
-        }
+  // 2. Kill daemon by PID file ONLY — never enumerate all node.exe processes
+  if (fs.existsSync(PID_FILE)) {
+    const pidStr = fs.readFileSync(PID_FILE, 'utf-8').trim();
+    const pid = parseInt(pidStr, 10);
+    if (!isNaN(pid) && pid > 0) {
+      try {
+        process.kill(pid, 'SIGTERM');
+        console.log(`Sent SIGTERM to daemon (pid=${pid})`);
+      } catch {
+        console.log(`Daemon pid=${pid} not running (may have already exited)`);
       }
-      if (killed > 0) {
-        console.log(`Killed ${killed} node process(es)`);
-      } else {
-        console.log(`No node.exe processes found (daemon may already be stopped)`);
-      }
-    } catch (err: any) {
-      console.log(`(Could not enumerate processes: ${err.message})`);
+      // Clean up PID file
+      try { fs.unlinkSync(PID_FILE); } catch {}
     }
   } else {
-    console.log(`Not on Windows — skipping daemon kill`);
+    console.log(`No PID file found at ${PID_FILE} (daemon may not be managed by install script)`);
+  }
+
+  // 3. If on Windows, verify no daemon.js processes are still lingering
+  if (process.platform === 'win32') {
+    try {
+      // Find processes whose command line contains 'daemon.js' — targeted, not blanket
+      const out = execSync(
+        'powershell -NoProfile -Command ' +
+        '$p = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like \'*daemon.js*\' } | Select-Object -ExpandProperty ProcessId -First 5; ' +
+        'if ($p) { $p -join \',\' } else { \'none\' }',
+        { encoding: 'utf-8', timeout: 5000 },
+      );
+      const lingering = out.trim();
+      if (lingering !== 'none' && lingering !== '') {
+        console.warn(`Warning: lingering daemon.js processes found: ${lingering}`);
+        console.warn('You may need to kill them manually: taskkill /F /PID <pid>');
+      }
+    } catch {
+      // WMI unavailable — skip
+    }
   }
 }
 
