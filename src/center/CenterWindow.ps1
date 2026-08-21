@@ -281,7 +281,7 @@ $closeBtn.Background = (New-Object System.Windows.Media.SolidColorBrush(
 $closeBtn.Foreground = [System.Windows.Media.Brushes]::White
 $closeBtn.BorderBrush = (New-Object System.Windows.Media.SolidColorBrush(
     [System.Windows.Media.ColorConverter]::ConvertFromString('#555555')))
-$closeBtn.Add_Click({ if ($window -and -not $window.IsDisposed) { try { if ($window -and -not $window.IsDisposed) { try { $window.Close() } catch {} } } catch {} } })
+$closeBtn.Add_Click({ if ($window -and -not $window.IsDisposed) { try { $window.Close() } catch {} } })
 $btnPanel.Children.Add($closeBtn) | Out-Null
 
 $stackPanel.Children.Add($btnPanel) | Out-Null

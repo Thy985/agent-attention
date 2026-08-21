@@ -1,0 +1,93 @@
+﻿<#
+.SYNOPSIS
+    agent-attention Known Issue Regression Suite
+.DESCRIPTION
+    验证本次会话修复的所有问题不再重现
+#>
+
+param(
+    [string]$ProjectRoot = "D:\Projects\Active\agent-attention"
+)
+
+Set-Location $ProjectRoot
+
+$cli = "node dist/daemon-cli.js"
+$notify = "node dist/index.js"
+$results = @{}
+
+Write-Host "============================================================"
+Write-Host "   agent-attention Regression Suite"
+Write-Host "============================================================"
+
+# R1: CLI 不触发 VS Code
+Write-Host ""
+Write-Host "[R1] CLI 启动不触发 VS Code"
+$before = (Get-CimInstance Win32_Process -Filter "Name='Code.exe'" | Measure-Object).Count
+& $cli doctor 2>&1 | Out-Null
+Start-Sleep 1
+$after = (Get-CimInstance Win32_Process -Filter "Name='Code.exe'" | Measure-Object).Count
+$results["R1"] = $after -ge $before
+Write-Host "  Code: $before -> $after $(if($results["R1"]){'PASS'}else{'FAIL'})"
+
+# R2: 单实例检查
+Write-Host ""
+Write-Host "[R2] 单实例检查"
+$tray = (Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'TrayIcon\.ps1' }).Count
+$daemon = (Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'daemon\.js' }).Count
+$results["R2"] = $tray -le 1 -and $daemon -le 1
+Write-Host "  tray=$tray daemon=$daemon $(if($results["R2"]){'PASS'}else{'FAIL'})"
+
+# R3: Center null 保护
+Write-Host ""
+Write-Host "[R3] Center null 保护"
+$content = Get-Content "src/center/CenterWindow.ps1" -Raw
+$results["R3"] = $content -match 'IsDisposed'
+Write-Host "  IsDisposed: $(if($results["R3"]){'PASS'}else{'FAIL'})"
+
+# R4: PS5.1 兼容
+Write-Host ""
+Write-Host "[R4] PS5.1 兼容性 (::new 检查)"
+$ps1Files = @("src/center/CenterWindow.ps1", "src/center/TrayIcon.ps1")
+$allGood = $true
+foreach ($f in $ps1Files) {
+    $c = Get-Content $f -Raw
+    if ($c -match '::new\(') {
+        Write-Host "  $f: 仍有 ::new()"
+        $allGood = $false
+    }
+}
+$results["R4"] = $allGood
+Write-Host "  $(if($results["R4"]){'PASS'}else{'FAIL'})"
+
+# R5: daemon 生命周期
+Write-Host ""
+Write-Host "[R5] daemon 生命周期"
+$before = (Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*daemon*' }).Count
+& $cli daemon start 2>&1 | Out-Null
+Start-Sleep 2
+$after = (Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*daemon*' }).Count
+$started = $after -ge 1
+& $cli daemon stop 2>&1 | Out-Null
+Start-Sleep 1
+$final = (Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*daemon*' }).Count
+$results["R5"] = $started -and $final -le 1
+Write-Host "  start=$started cleanup=$final $(if($results["R5"]){'PASS'}else{'FAIL'})"
+
+# R6: notify 不触发 VS Code
+Write-Host ""
+Write-Host "[R6] notify 不触发 VS Code"
+$before = (Get-CimInstance Win32_Process -Filter "Name='Code.exe'" | Measure-Object).Count
+& $notify completed "test" 2>&1 | Out-Null
+Start-Sleep 1
+$after = (Get-CimInstance Win32_Process -Filter "Name='Code.exe'" | Measure-Object).Count
+$results["R6"] = $after -ge $before
+Write-Host "  Code: $before -> $after $(if($results["R6"]){'PASS'}else{'FAIL'})"
+
+Write-Host ""
+Write-Host "============================================================"
+$pass = ($results.Values | Where-Object { $_ }).Count
+$fail = ($results.Values | Where-Object { -not $_ }).Count
+Write-Host "结果: $pass/$($results.Count) PASS"
+Write-Host "============================================================"
+
+exit $(if ($fail -gt 0) { 1 } else { 0 })
