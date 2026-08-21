@@ -18,16 +18,14 @@ function runPs(script: string, timeoutMs = 5000): string {
   }
 }
 
-/** Get PowerShell.exe process IDs matching a path pattern (no CommandLine needed). */
+/** Get PowerShell.exe PIDs whose exe path contains the given pattern (PS5.1-safe). */
 function getPsPids(pattern: string): number[] {
   try {
-    const nl = '\n';
-    const script =
-      '$p = Get-Process -Name powershell -ErrorAction SilentlyContinue |' + nl +
-      ` Where-Object { $_.Path -like '*${pattern}*' } |` + nl +
-      ' Select-Object -ExpandProperty Id' + nl +
-      'if ($p) { $p -join \"`n\" }';
-    const out = runPs(script);
+    const out = runPs(
+      'get-ciminstance win32_process | where-object { $_.name -eq ' +
+      "'powershell.exe' -and $_.path -like '*" + pattern + "*' } " +
+      '| select-object -expandproperty processid',
+    );
     return out.trim().split('\n').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n));
   } catch { return []; }
 }
@@ -88,7 +86,7 @@ function getStatus(): DaemonStatus {
   const pid = readPid();
   const running = pid !== null && isProcessRunning(pid);
 
-  // Check if tray process exists via Get-Process (issue #14: CIM/WMI can be disabled)
+  // Check if tray process exists via get-ciminstance (issue #14)
   let trayRunning = false;
   try {
     const pids = getPsPids('TrayIcon.ps1');
@@ -244,27 +242,25 @@ function doctor(): void {
   console.log('======================');
   console.log('');
 
-  // Count running daemon and tray instances (issue #14: use Get-Process by path)
+  // Count running daemon and tray instances (issue #14: get-ciminstance, PS5.1-safe)
   let daemonInstances = 0;
   let trayInstances = 0;
   try {
-    const out = runPs([
-      '$count = (Get-Process -Name node -ErrorAction SilentlyContinue |',
-      " Where-Object { `$_.Path -like '*daemon.js*' -and `$_.Path -like '*agent-attention*' } |",
-      ' Measure-Object).Count',
-      'Write-Host $count',
-    ].join('\n'));
-    daemonInstances = parseInt(out.trim(), 10) || 0;
+    const out = runPs(
+      "get-ciminstance win32_process | where-object { $_.name -eq 'node.exe' " +
+      "-and $_.commandline -like '*daemon.js*' -and $_.commandline -like '*agent-attention*' } " +
+      "| select-object -expandproperty processid",
+    );
+    daemonInstances = out.trim().split('\n').filter(Boolean).length;
   } catch { daemonInstances = 0; }
 
   try {
-    const out = runPs([
-      '$count = (Get-Process -Name powershell -ErrorAction SilentlyContinue |',
-      " Where-Object { `$_.Path -like '*TrayIcon.ps1*' } |",
-      ' Measure-Object).Count',
-      'Write-Host $count',
-    ].join('\n'));
-    trayInstances = parseInt(out.trim(), 10) || 0;
+    const out = runPs(
+      "get-ciminstance win32_process | where-object { $_.name -eq 'powershell.exe' " +
+      "-and $_.path -like '*TrayIcon.ps1*' } " +
+      "| select-object -expandproperty processid",
+    );
+    trayInstances = out.trim().split('\n').filter(Boolean).length;
   } catch { trayInstances = 0; }
 
   const checks = [
