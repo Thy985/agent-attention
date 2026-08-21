@@ -35,6 +35,7 @@ describe('AttentionState', () => {
         updatedAt: expect.any(Number),
         unreadCount: 0,
         events: [],
+        visible: false,
       });
     });
   });

@@ -114,6 +114,7 @@ export function createDaemon(options: DaemonOptions): Daemon {
         '-File', options.trayScriptPath,
         '-StatePath', options.statePath,
         '-CliPath', options.cliPath,
+        '-TrayStatePath', options.trayStatePath,
       ];
     if (options.trayPidPath) trayArgs.push('-TrayPidPath', options.trayPidPath);
 
@@ -199,13 +200,17 @@ export function createDaemon(options: DaemonOptions): Daemon {
       if (trayProc) {
         const pid = trayProc.pid!;
         trayProc = null;
-        // Wait up to 3s for tray to exit gracefully after file deletion
-        const deadline = Date.now() + 3000;
+        // Wait up to 5s for tray to exit gracefully after state-file deletion.
+        // With the correct TrayStatePath (daemon deletes it, tray detects it),
+        // the tray runs Invoke-Exit → sets Visible=$false → Windows immediately
+        // reclaims the shell icon handle.  No SIGTERM needed.
+        const deadline = Date.now() + 5000;
         while (Date.now() < deadline) {
           try { process.kill(pid, 0); } catch { break; } // gone
           await new Promise(r => setTimeout(r, 100));
         }
-        // Last resort: only kill if it didn't exit on its own
+        // SIGTERM last resort — on Windows this is TerminateProcess (hard kill),
+        // which cannot run cleanup.  If we reach here the graceful path failed.
         try { process.kill(pid, 'SIGTERM'); } catch {}
       }
     },

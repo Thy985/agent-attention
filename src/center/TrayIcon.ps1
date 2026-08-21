@@ -7,9 +7,10 @@
 #             [-StatePath <path>] [-CliPath <path>]
 
 param(
-    [string]$StatePath   = "$env:USERPROFILE\.agent-attention\state.json",
-    [string]$CliPath     = "",
-    [string]$TrayPidPath = ""   # path to tray.pid file (written by daemon, read on exit)
+    [string]$StatePath      = "$env:USERPROFILE\.agent-attention\state.json",
+    [string]$CliPath        = "",
+    [string]$TrayPidPath    = "",  # path to tray.pid file (written by daemon, read on exit)
+    [string]$TrayStatePath  = ""   # path to polling file — MUST match daemon's trayStatePath
 )
 
 Add-Type -AssemblyName System.Windows.Forms
@@ -29,7 +30,13 @@ if (-not $acquired) {
     Write-Warning "Another TrayIcon is already running."
     exit 0
 }
-trap { $mutex.ReleaseMutex(); break }
+trap {
+    # On ANY unhandled error: hide icon, release mutex, exit cleanly
+    # This prevents ghost icons if an exception fires outside the polling loop
+    Invoke-Exit -Graceful $false
+    $mutex.ReleaseMutex()
+    break
+}
 
 $script:notifyIcon      = $null
 $script:currentState    = @{ unreadCount = 0; events = @() }
@@ -76,6 +83,11 @@ function Update-NotifyIcon {
     $totalUnread = ($State.events | Where-Object { -not $_.read }).Count
     $badge       = if ($totalUnread -gt 0) { "[$totalUnread]" } else { "[0]" }
     $script:notifyIcon.Text = "Agent Attention: $badge"
+
+    # Show/hide icon based on visible flag from daemon
+    # visible=true  → icon present (unread events or user explicitly cleared)
+    # visible=false → icon hidden (idle, nothing to show)
+    $script:notifyIcon.Visible = [bool]$State.visible
 
     $iconColor = Get-IconColor $totalUnread
     $bmp       = Build-IconBitmap $totalUnread $iconColor
@@ -208,7 +220,7 @@ function Build-ContextMenu {
 
 function Start-Tray {
     # Resolve CLI path — support AGENT_ATTENTION_NODE for global installs (issue #9)
-    $cliExe  = $env:AGENT_ATTENTION_NODE ?? "node"
+    $cliExe = if ($env:AGENT_ATTENTION_NODE) { $env:AGENT_ATTENTION_NODE } else { "node" }
     $cliPath = $CliPath
     if (-not $cliPath -or -not (Test-Path $cliPath)) {
         $candidate = Join-Path $PSScriptRoot '..\..\dist\daemon-cli.js'
@@ -220,8 +232,8 @@ function Start-Tray {
             if (Test-Path $candidate) { $cliPath = $candidate }
         }
     }
-    $script:cliPath = $cliPath
-    $script:trayStatePath = "$env:TEMP\agent-attention-tray-state.json"
+    $script:cliPath        = $CliPath
+    $script:trayStatePath  = if ($TrayStatePath) { $TrayStatePath } else { "$env:TEMP\agent-attention-tray-state.json" }
 
     # Create owned initial icon (never use SystemIcons — issue #13)
     $initBmp  = Build-IconBitmap 0 (Get-IconColor 0)
@@ -287,14 +299,12 @@ function Invoke-Exit {
         $script:notifyIcon.Dispose()
         $script:notifyIcon = $null
     }
-    # Clean up PID file and polling state so next spawn starts fresh (issue #1, secondary)
+    # Clean up PID file so next spawn knows there's no active tray
     if ($TrayPidPath -and (Test-Path $TrayPidPath)) {
         try { Remove-Item $TrayPidPath -Force -ErrorAction SilentlyContinue } catch {}
     }
-    # Also remove our local temp copy of tray-state.json if present
-    if ($script:trayStatePath -and (Test-Path $script:trayStatePath)) {
-        try { Remove-Item $script:trayStatePath -Force -ErrorAction SilentlyContinue } catch {}
-    }
+    # Do NOT delete the polling state file here — that's the daemon's job.
+    # Deleting it here would confuse a respawning daemon that expects to manage it.
     if ($Graceful) {
         [System.Windows.Forms.Application]::Exit()
     }
@@ -348,7 +358,7 @@ Start-Tray
 # NOTE: We do NOT recreate it inside the loop — if daemon deletes it to signal
 # shutdown, we must exit, not silently recreate and stay alive.
 if (-not (Test-Path $script:trayStatePath)) {
-    @{ version=1; updatedAt=0; unreadCount=0; events=@() } | ConvertTo-Json -Depth 3 |
+    @{ version=1; updatedAt=0; unreadCount=0; events=@(); visible=$false } | ConvertTo-Json -Depth 3 |
         Set-Content $script:trayStatePath -Encoding UTF8
 }
 
@@ -362,6 +372,10 @@ while (-not (Test-TrayShouldExit)) {
     try {
         if (Test-Path $script:trayStatePath) {
             $newState = Get-Content $script:trayStatePath -Raw -Encoding UTF8 | ConvertFrom-Json
+            # Backward-compat: missing 'visible' → default to showing icon
+            if (-not ($newState.PSObject.Properties.Name -contains 'visible')) {
+                $newState | Add-Member -NotePropertyName 'visible' -NotePropertyValue $true -Force
+            }
             # Only rebuild menu when state actually changes AND menu is not visible (issue #11)
             $oldJson  = ($script:currentState.events | ConvertTo-Json -Compress)
             $newJson  = ($newState.events   | ConvertTo-Json -Compress)

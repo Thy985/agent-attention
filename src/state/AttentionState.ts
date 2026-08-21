@@ -22,6 +22,7 @@ export interface State {
   updatedAt: number;
   unreadCount: number;
   events: StateEvent[];
+  visible: boolean; // whether the tray icon should be shown
 }
 
 export interface RecordEventInput {
@@ -39,6 +40,7 @@ const DEFAULT_STATE: State = {
   updatedAt: 0,
   unreadCount: 0,
   events: [],
+  visible: false, // hidden when nothing to show
 };
 
 export function readState(statePath: string): State {
@@ -101,6 +103,7 @@ export function recordEvent(statePath: string, input: RecordEventInput): State {
     updatedAt: input.timestamp,
     unreadCount: current.unreadCount + 1,
     events,
+    visible: events.length > 0, // show icon whenever events exist
   };
   atomicWrite(statePath, next);
   return next;
@@ -115,6 +118,7 @@ export function clearUnread(statePath: string): State {
     updatedAt: Date.now(),
     unreadCount: 0,
     events,
+    visible: events.length > 0, // keep visible while events exist, even if all read
   };
   atomicWrite(statePath, next);
   return next;
@@ -126,6 +130,7 @@ export function clearAll(statePath: string): State {
     updatedAt: Date.now(),
     unreadCount: 0,
     events: [],
+    visible: false, // no events → hide icon
   };
   atomicWrite(statePath, next);
   return next;
@@ -144,8 +149,9 @@ export function markRead(statePath: string, eventId: string): State {
   const next: State = {
     ...current,
     updatedAt: Date.now(),
-    unreadCount: current.unreadCount - 1,
+    unreadCount: Math.max(0, current.unreadCount - 1),
     events,
+    visible: events.length > 0,
   };
   atomicWrite(statePath, next);
   return next;
@@ -182,6 +188,7 @@ export function markAgentEventsRead(statePath: string, agentId: string): State {
     updatedAt: Date.now(),
     unreadCount: Math.max(0, current.unreadCount - unreadForAgent),
     events,
+    visible: events.length > 0,
   };
   atomicWrite(statePath, next);
   return next;
