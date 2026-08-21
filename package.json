@@ -24,6 +24,10 @@
     "toast",
     "attention"
   ],
+  "files": [
+    "dist/",
+    "src/center/*.ps1"
+  ],
   "license": "MIT",
   "engines": {
     "node": ">=18.0.0"

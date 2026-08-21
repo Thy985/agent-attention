@@ -355,13 +355,15 @@ function doctor(): void {
     },
     {
       name: 'Windows Toast',
-      ok: process.platform === 'win32',
-      detail: process.platform === 'win32' ? 'available' : `not on Windows (${process.platform})`,
+      ok: process.platform === 'win32' && fs.existsSync(path.join(__dirname, '..', 'dist', 'notification', 'win32.js')),
+      detail: process.platform === 'win32'
+        ? (fs.existsSync(path.join(__dirname, '..', 'dist', 'notification', 'win32.js')) ? 'available (snoretoast)' : 'node-notifier module missing')
+        : `not on Windows (${process.platform})`,
     },
     {
       name: 'Sound',
-      ok: true,
-      detail: 'play-sound dependency present',
+      ok: process.platform === 'win32',  // PowerShell SystemSounds always available on Windows
+      detail: process.platform === 'win32' ? 'available (SystemSounds)' : `not on Windows (${process.platform})`,
     },
     {
       name: 'Daemon PID',

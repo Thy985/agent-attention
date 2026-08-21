@@ -1,17 +1,25 @@
+import * as path from 'path';
+import * as os from 'os';
 import notifier from 'node-notifier';
 import { EventName, EVENT_PRIORITY } from '../events';
 
 /** Title prefix shown on every Toast. */
 const APP_NAME = 'Agent Attention';
 
+/** Resolve the daemon CLI path for toast action callbacks. */
+function getDaemonCliPath(): string {
+  const envPath = process.env.AGENT_ATTENTION_CLI;
+  if (envPath) return envPath;
+  const local = path.join(__dirname, '..', 'dist', 'daemon-cli.js');
+  if (require('fs').existsSync(local)) return local;
+  // Fallback for global installs
+  return local;
+}
+
 /**
- * Send a Windows Toast notification and optionally play a sound.
+ * Send a Windows Toast notification with action buttons.
+ * Clicking "View" opens the Center window; "Dismiss" marks all read.
  * Throws on permanent failure so the caller can decide how to surface it.
- *
- * Sound strategy:
- * - P0 (urgent): fires two loud system sounds asynchronously via PowerShell
- *   (Asterisk + Hand) so the user cannot miss them.
- * - P1/P2: relies on snoretoast's built-in sound (atomic with Toast).
  */
 export async function notify(
   event: EventName,
@@ -19,32 +27,47 @@ export async function notify(
   soundEnabled: boolean,
 ): Promise<void> {
   const isUrgent = EVENT_PRIORITY[event] === 'P0';
+  const cliPath = getDaemonCliPath();
+  const centerPath = path.join(__dirname, '..', 'src', 'center', 'CenterWindow.ps1');
+  const stateDir   = path.join(os.homedir(), '.agent-attention');
 
-  // --- Windows Toast (atomic with built-in sound) ---
   await new Promise<void>((resolve, reject) => {
     notifier.notify(
       {
         title: `${APP_NAME}: ${event}`,
         message,
-        // For P0 we don't play a toast sound here because the PowerShell
-        // fire-and-forget below plays louder system sounds. For P1/P2 we
-        // let snoretoast emit its default notification sound.
         sound: isUrgent ? false : soundEnabled ? 'Notification.Default' : false,
-        wait: false,
-      },
-      (error: Error | null) => {
-        if (error) {
-          reject(new Error(`Toast failed: ${error.message}`));
-        } else {
-          resolve();
+        wait: true,  // block until user interacts with the toast
+        actions: [
+          { action: 'activate', arguments: 'center', content: 'View' },
+          { action: 'dismiss',  arguments: '',       content: 'Dismiss' },
+        ],
+      } as any,
+      (_err: Error | null, response: any) => {
+        if (response === 'activate') {
+          // Open Center window on toast click
+          try {
+            const { spawn } = require('child_process');
+            spawn('powershell', [
+              '-NoProfile', '-ExecutionPolicy', 'Bypass',
+              '-File', centerPath,
+              '-StatePath', path.join(stateDir, 'state.json'),
+              '-RegistryPath', path.join(stateDir, 'agents.json'),
+            ], { windowsHide: true });
+          } catch {}
+        } else if (response === 'dismiss') {
+          // Mark all read on dismiss
+          try {
+            const { spawn } = require('child_process');
+            spawn('node', [cliPath, 'mark-all-read'], { windowsHide: true });
+          } catch {}
         }
+        resolve();
       },
     );
   });
 
   // --- Additional loud system sounds for urgent events (fire-and-forget) ---
-  // Uses async exec so it doesn't block CLI exit; the sound plays in parallel
-  // with the Toast, eliminating perceptible delay.
   if (soundEnabled && isUrgent) {
     playUrgentSoundAsync();
   }

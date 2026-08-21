@@ -244,27 +244,38 @@ function Start-Tray {
     $script:notifyIcon.Icon       = $initIcon
     $script:notifyIcon.Visible    = $true
 
-    # Left-click — open Center (issue #8: debounce to suppress spurious click on dbl-click)
+    # Track whether a double-click is in progress to suppress the second click's action
+    $script:suppressClick = $false
+
+    # Left-click — open Center (single click only; double-click is handled separately)
     $script:notifyIcon.Add_Click({
         param($s, $e)
         $now = [DateTime]::Now.Ticks
-        # Only act if this isn't part of a double-click (>250ms since last click)
-        if ($now - $script:clickTimestamp -gt 2500000) {
-            $centerPath = Join-Path $PSScriptRoot 'CenterWindow.ps1'
-            $args = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$centerPath`"" 
-                      , '-StatePath', $script:StatePath)
-            if ($script:cliPath) {
-                $stateDir = Split-Path $script:StatePath -Parent
-                $args += '-RegistryPath', (Join-Path $stateDir 'agents.json')
-            }
-            Start-Process powershell -ArgumentList $args -WindowStyle Hidden
+        # Suppress if we're inside a double-click sequence (the DoubleClick handler fires first)
+        if ($script:suppressClick) {
+            $script:suppressClick = $false
+            return
         }
+        # If within 250ms of the previous click, this is the SECOND click of a double-click
+        # → don't open Center, let the DoubleClick handler do its job
+        if ($now - $script:clickTimestamp -lt 2500000) {
+            return
+        }
+        $centerPath = Join-Path $PSScriptRoot 'CenterWindow.ps1'
+        $args = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$centerPath`""
+                  , '-StatePath', $script:StatePath)
+        if ($script:cliPath) {
+            $stateDir = Split-Path $script:StatePath -Parent
+            $args += '-RegistryPath', (Join-Path $stateDir 'agents.json')
+        }
+        Start-Process powershell -ArgumentList $args -WindowStyle Hidden
         $script:clickTimestamp = $now
     }.GetNewClosure()) | Out-Null
 
-    # Double-click — mark all read (fires AFTER both clicks, so debounced click is suppressed by timestamp gap)
+    # Double-click — mark all read (no Center window opened)
     $script:notifyIcon.Add_DoubleClick({
         param($s, $e)
+        $script:suppressClick = $true   # cancel any pending second-click action
         if ($script:cliPath -and (Test-Path $script:cliPath)) {
             try {
                 Start-Process $cliExe -ArgumentList $script:cliPath, 'mark-all-read' `

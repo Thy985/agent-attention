@@ -56,11 +56,15 @@ export function readState(statePath: string): State {
     const actualUnread = parsed.events.filter((e: StateEvent) => !e.read).length;
     if (actualUnread !== parsed.unreadCount) {
       parsed.unreadCount = actualUnread;
-      // Rewrite with corrected count using a unique tmp name to avoid concurrent races.
-      const tmpPath = `${statePath}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
-      fs.writeFileSync(tmpPath, JSON.stringify(parsed, null, 2), 'utf-8');
-      fs.renameSync(tmpPath, statePath);
     }
+    // Ensure visible is set based on events (backward-compat: old state files lack this field)
+    if (parsed.visible === undefined) {
+      parsed.visible = parsed.events.length > 0;
+    }
+    // Rewrite with corrected values to keep disk in sync
+    const tmpPath = `${statePath}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
+    fs.writeFileSync(tmpPath, JSON.stringify(parsed, null, 2), 'utf-8');
+    fs.renameSync(tmpPath, statePath);
     return parsed;
   } catch {
     console.warn(`[agent-attention] state.json corrupted, using defaults`);

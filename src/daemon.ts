@@ -22,6 +22,17 @@ export interface Daemon {
 const TRAY_STATE_POLL_MS = 1000;
 const PID_CHECK_INTERVAL_MS = 5000;
 
+// Module-level logger — writable from both createDaemon() and process handlers
+const LOG_PATH = path.join(os.homedir(), '.agent-attention', 'daemon.log');
+try { fs.mkdirSync(path.dirname(LOG_PATH), { recursive: true }); } catch {}
+const _logFile = fs.createWriteStream(LOG_PATH, { flags: 'a' });
+export function daemonLog(msg: string, debug?: boolean): void {
+  const ts = new Date().toISOString();
+  _logFile.write(`[${ts}] ${msg}\n`);
+  if (debug) console.error(`[daemon] ${msg}`);
+}
+export function closeDaemonLog(): void { try { _logFile.end(); } catch {} }
+
 /** Read tray PID from file. Returns null if missing or invalid. */
 function readTrayPid(trayPidPath: string): number | null {
   try {
@@ -49,11 +60,7 @@ export function createDaemon(options: DaemonOptions): Daemon {
   let stopped = false;
   let lastStateHash = '';
 
-  const log = (msg: string) => {
-    if (options.debug) {
-      console.error(`[daemon] ${msg}`);
-    }
-  };
+  const log = (msg: string) => daemonLog(msg, options.debug);
 
   /** Compute a light hash of state so we only rewrite tray-state.json on real changes. */
   function stateHash(state: ReturnType<typeof readState>): string {
@@ -243,17 +250,22 @@ if (require.main === module) {
   process.on('SIGTERM', () => daemon.stop().then(() => process.exit(0)));
   process.on('SIGINT',  () => daemon.stop().then(() => process.exit(0)));
 
-  // On crash, clean up tray PID file so next start knows there's no active tray
-  process.on('uncaughtException', () => {
-    try { fs.unlinkSync(trayPidPath); } catch {}
-    try { fs.unlinkSync(trayStatePath); } catch {}
+  // On crash, log the error and clean up files so next start can recover
+  process.on('uncaughtException', (err) => {
+    try {
+      const msg = err && err.stack ? err.stack : String(err);
+      daemonLog(`FATAL uncaughtException: ${msg}`, debug);
+      fs.unlinkSync(trayPidPath);
+      fs.unlinkSync(trayStatePath);
+    } catch {}
     process.exit(1);
   });
   process.on('beforeExit', () => {
     try { fs.unlinkSync(trayPidPath); } catch {}
     try { fs.unlinkSync(trayStatePath); } catch {}
+    closeDaemonLog();
   });
 
-  console.error(`[daemon] started, watching ${statePath}`);
-  console.error(`[daemon] tray polling file: ${trayStatePath}`);
+  daemonLog(`started, watching ${statePath}`, debug);
+  daemonLog(`tray polling file: ${trayStatePath}`, debug);
 }

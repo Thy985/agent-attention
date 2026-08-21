@@ -28,6 +28,16 @@ if (-not $acquired) {
 trap { $mutex.ReleaseMutex(); break }
 
 # ---------------------------------------------------------------------------
+# Resolve CLI path for mark-read (issue F: per-event read in center)
+# ---------------------------------------------------------------------------
+$script:_centerCliPath = if ($env:AGENT_ATTENTION_CLI) { $env:AGENT_ATTENTION_CLI } else { Join-Path $PSScriptRoot '..\..\dist\daemon-cli.js' }
+if (-not (Test-Path $script:_centerCliPath)) {
+    $alt = Join-Path $PSScriptRoot '..\..\..\AppData\Local\mise\installs\node\*\agent-attention.cmd'
+    $found = Get-ChildItem -Path (Split-Path $alt) -Directory | ForEach-Object { Join-Path $_.FullName 'agent-attention.cmd' } | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if ($found) { $script:_centerCliPath = $found }
+}
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 function Get-State {
@@ -504,6 +514,30 @@ while ($script:_centerRefreshing -and $window -and -not $window.IsDisposed) {
                             [System.Windows.Media.ColorConverter]::ConvertFromString('#777777')))
                         $tm.VerticalAlignment = 'Center'
                         $ep.Children.Add($tm) | Out-Null
+
+                        # Per-event "mark read" button (issue F)
+                        if (-not $ev.read) {
+                            $rb = New-Object System.Windows.Controls.TextBlock
+                            $rb.Text         = ' ✓'
+                            $rb.FontSize     = 12
+                            $rb.FontWeight   = 'Bold'
+                            $rb.Foreground   = (New-Object System.Windows.Media.SolidColorBrush(
+                                [System.Windows.Media.ColorConverter]::ConvertFromString('#55BB55')))
+                            $rb.Cursor       = [System.Windows.Input.Cursors]::Hand
+                            $rb.Margin      = '8,4,0,4'
+                            $rb.ToolTip     = 'Mark as read'
+                            $evId = $ev.id
+                            $evCliPath = $script:_centerCliPath
+                            $rb.Add_MouseDown({
+                                param($s, $e)
+                                $e.Handled = $true
+                                if ($evCliPath) {
+                                    try { Start-Process $env:AGENT_ATTENTION_NODE -ArgumentList "$evCliPath", 'mark-read', $evId -WindowStyle Hidden -ErrorAction SilentlyContinue } catch {}
+                                }
+                                $s.Parent.RemoveChild($s)
+                            }.GetNewClosure()) | Out-Null
+                            $ep.Children.Add($rb) | Out-Null
+                        }
 
                         $newStack.Children.Add($ep) | Out-Null
                     }
