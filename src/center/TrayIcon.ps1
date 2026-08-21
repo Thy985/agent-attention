@@ -301,35 +301,52 @@ function Invoke-Exit {
 }
 
 # ---------------------------------------------------------------------------
-# Signal handler — graceful shutdown on SIGTERM (issue #4)
+# Exit triggers
+#   1. stopSignal     — set by Ctrl+C handler or explicit Exit menu
+#   2. state file gone — daemon deleted tray-state.json (graceful stop)
+#   3. parent dead    — daemon.pid lost (daemon crashed/killed externally)
 # ---------------------------------------------------------------------------
 [Console]::TreatInputLineAsCommandLine = $false
-Register-WinEvent = ${}  # placeholder; actual handling below
 
-# Trap SIGTERM / Ctrl+C
-$handler = {
-    param($sig)
-    Write-Host "[TrayIcon] received signal $sig — exiting" -ForegroundColor Yellow
+# Ctrl+C → set stopSignal so polling loop exits → Invoke-Exit hides icon
+$ctrlHandler = {
+    param($s, $e)
+    Write-Host "[TrayIcon] Ctrl+C received — exiting" -ForegroundColor Yellow
     $script:stopSignal = $true
-}
+}.GetNewClosure()
+[Console]::Add_CancelKeyPress($ctrlHandler) | Out-Null
 
-# Console control event handler
-$consoleHandler = {
-    param($ctrlType)
-    if ($ctrlType -eq 1 -or $ctrlType -eq 15) {  # CTRL_CLOSE_EVENT or CTRL_LOGOFF_EVENT
-        $script:stopSignal = $true
+# Build a helper that checks all three exit conditions
+function Test-TrayShouldExit {
+    if ($script:stopSignal) { return $true }
+    if (-not (Test-Path $script:trayStatePath)) { return $true }
+    # Parent death detection: daemon.pid missing or process gone
+    if ($StatePath) {
+        $stateDir = Split-Path $StatePath -Parent
+        $daemonPidPath = Join-Path $stateDir 'daemon.pid'
+        if (-not (Test-Path $daemonPidPath)) { return $true }
+        try {
+            $pid = [int](Get-Content $daemonPidPath -Raw)
+            if ($pid -gt 0) {
+                # Windows: use WMI to check liveness (no Get-Process .Handle access)
+                $alive = Get-CimInstance Win32_Process -Filter "ProcessId=$pid" -ErrorAction SilentlyContinue
+                if (-not $alive) { return $true }
+            }
+        } catch { return $true }
     }
     return $false
 }
-$null = Register-ObjectEvent -InputObject (New-Object System.Management.Automation.PSConsoleHost) -EventName ControlC -Action $handler -ErrorAction SilentlyContinue 2>$null
 
 # ---------------------------------------------------------------------------
-# Polling loop — DO NOT exit on missing file (issue #3 fix)
+# Polling loop
+# Exit when: stopSignal set / state file deleted by daemon / parent daemon dead
 # ---------------------------------------------------------------------------
 
 Start-Tray
 
-# Ensure tray-state.json exists so polling loop doesn't break
+# Ensure tray-state.json exists on FIRST start only (before the loop).
+# NOTE: We do NOT recreate it inside the loop — if daemon deletes it to signal
+# shutdown, we must exit, not silently recreate and stay alive.
 if (-not (Test-Path $script:trayStatePath)) {
     @{ version=1; updatedAt=0; unreadCount=0; events=@() } | ConvertTo-Json -Depth 3 |
         Set-Content $script:trayStatePath -Encoding UTF8
@@ -337,7 +354,7 @@ if (-not (Test-Path $script:trayStatePath)) {
 
 Write-Host "[TrayIcon] polling $script:trayStatePath" -ForegroundColor Green
 
-while (-not $script:stopSignal) {
+while (-not (Test-TrayShouldExit)) {
     # Pump Windows messages so Click/DoubleClick/ContextMenu callbacks fire
     [System.Windows.Forms.Application]::DoEvents()
 

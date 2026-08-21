@@ -185,13 +185,29 @@ export function createDaemon(options: DaemonOptions): Daemon {
         await watcher.close();
         watcher = null;
       }
-      if (trayProc) {
-        try { trayProc.kill('SIGTERM'); } catch {}
-        trayProc = null;
-      }
-      clearTrayPid(options.trayPidPath);
-      // Clean up polling file so TrayIcon's loop exits
+
+      // ── Graceful tray shutdown ──────────────────────────────────
+      // Delete the polling file FIRST so the tray's loop exits naturally.
+      // On Windows, SIGTERM from Node.js maps to TerminateProcess() which
+      // kills the process before it can run cleanup — causing ghost icons.
+      // By removing the file first, the tray detects the signal and runs
+      // Invoke-Exit which sets Visible=$false, making Windows immediately
+      // reclaim the shell icon handle.
       try { fs.unlinkSync(options.trayStatePath); } catch {}
+      clearTrayPid(options.trayPidPath);
+
+      if (trayProc) {
+        const pid = trayProc.pid!;
+        trayProc = null;
+        // Wait up to 3s for tray to exit gracefully after file deletion
+        const deadline = Date.now() + 3000;
+        while (Date.now() < deadline) {
+          try { process.kill(pid, 0); } catch { break; } // gone
+          await new Promise(r => setTimeout(r, 100));
+        }
+        // Last resort: only kill if it didn't exit on its own
+        try { process.kill(pid, 'SIGTERM'); } catch {}
+      }
     },
   };
 }
