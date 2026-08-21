@@ -46,7 +46,9 @@ export function readState(statePath: string): State {
     return { ...DEFAULT_STATE, updatedAt: Date.now() };
   }
   try {
-    const raw = fs.readFileSync(statePath, 'utf-8');
+    let raw = fs.readFileSync(statePath, 'utf-8');
+    // Strip UTF-8 BOM if present (PowerShell Set-Content adds one)
+    if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
     const parsed = JSON.parse(raw) as State;
     // Fix unreadCount: recompute from events (handles legacy data without 'read' field)
     const actualUnread = parsed.events.filter((e: StateEvent) => !e.read).length;
