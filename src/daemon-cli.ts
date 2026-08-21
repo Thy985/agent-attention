@@ -252,7 +252,7 @@ function doctor(): void {
   try {
     const out = runPs(
       'get-ciminstance win32_process | where-object { $_.name -eq ' +
-      "'powershell.exe' -and $_.path -like '*TrayIcon.ps1*' } " +
+      "'powershell.exe' -and $_.commandline -like '*TrayIcon.ps1*' } " +
       '| select-object -expandproperty processid',
     );
     trayInstances = out.trim().split('\n').filter(Boolean).length;
