@@ -3,6 +3,8 @@ import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
+
+const AUTH_SECRET_PATH = 'ipc-auth.secret';
 import { readState } from '../state/AttentionState';
 import { daemonLog } from '../daemon';
 
@@ -28,6 +30,7 @@ interface PipeState {
   server: net.Server | null;
   clients: Map<string, net.Socket>;
   stopped: boolean;
+  token: string;
 }
 
 type RpcHandler = (args: string[]) => Promise<{ ok: boolean; code: number; error?: string }>;
@@ -72,21 +75,13 @@ export function startPipeServer(stateDir: string): void {
   _port = 0;
   const statePath = path.join(stateDir, 'state.json');
 
-  _state = { server: null, clients: new Map(), stopped: false };
+  _state = { server: null, clients: new Map(), stopped: false, token: crypto.randomBytes(32).toString('hex') };
 
   const isWindows = process.platform === 'win32';
 
   if (isWindows) {
     try {
       const token = getUserToken();
-      // Pick a port that avoids the fixed base (29876) to reduce test collisions.
-      // On Windows, named-pipe-style TCP ports in this range may be held by previous
-      // test runs; falling back to a random high port is safe because the C# client
-      // reads the actual port from ipc-port.txt at connect time.
-      // Use a random offset to avoid port collisions in test environments where
-      // the fixed base port (29876 + token_charcode % 100) may be held by stale
-      // processes. The C# client reads the actual port from ipc-port.txt.
-      const basePort = 29876;
       const port = 35000 + Math.floor(Math.random() * 10000);
 
       const server = net.createServer((socket: net.Socket) => {
@@ -95,6 +90,33 @@ export function startPipeServer(stateDir: string): void {
         daemonLog(`ipc client connected: ${clientId}`);
 
         socket.on('data', (data: Buffer) => {
+          // M8 P0: require token handshake before accepting commands
+          if (!(socket as any).authorized) {
+            try {
+              const raw = data.toString();
+              const msg = JSON.parse(raw);
+              if (msg.type === 'hello' && msg.token === _state!.token) {
+                (socket as any).authorized = true;
+                console.log('[IPC] AUTH OK for', clientId, 'token match:', msg.token === _state!.token);
+                return;
+              }
+              console.log('[IPC] AUTH FAIL for', clientId, 'server_token=', _state!.token?.substring(0,8), 'received_token=', msg.token?.substring(0,8));
+              daemonLog(`ipc unauthorized connection from ${clientId}`);
+              // Send auth-rejected before destroy so client can detect rejection
+              try {
+                socket.write(JSON.stringify({ type: 'auth-rejected' }) + '\n');
+              } catch {}
+              const _p1 = socket;
+              setTimeout(() => { try { _p1.destroy(); } catch {} }, 500);
+            } catch {
+              daemonLog(`ipc malformed hello from ${clientId}`);
+              try {
+                socket.write(JSON.stringify({ type: 'auth-rejected' }) + '\n');
+              } catch {}
+              const _p2 = socket;
+              setTimeout(() => { try { _p2.destroy(); } catch {} }, 500);
+            }
+          }
           try {
             const msg = JSON.parse(data.toString());
             if (msg.type === 'subscribe') {
@@ -161,6 +183,9 @@ export function startPipeServer(stateDir: string): void {
         try {
           const portFile = path.join(stateDir, 'ipc-port.txt');
           fs.writeFileSync(portFile, String(addr.port));
+          // M8 P0: write auth secret for same-user IPC authentication
+          const authFile = path.join(stateDir, AUTH_SECRET_PATH);
+          try { fs.writeFileSync(authFile, _state!.token, { mode: 0o600 }); } catch {}
         } catch {}
         daemonLog(`ipc listening on 127.0.0.1:${addr.port}`);
         _state!.server = server;

@@ -47,6 +47,11 @@ describe('ipc (pipeline)', () => {
 
     const client = require('net').createConnection(port, '127.0.0.1');
     await new Promise<void>(resolve => client.once('connect', resolve));
+    // Read auth token and send hello handshake
+    let authToken = '';
+    try { authToken = fs.readFileSync(path.join(tmpDir, 'ipc-auth.secret'), 'utf8').trim(); } catch {}
+    client.write(JSON.stringify({ type: 'hello', token: authToken }) + '\n');
+    await new Promise(r => setTimeout(r, 50));
     client.write(JSON.stringify({ type: 'subscribe' }) + '\n');
 
     // Drain the subscribe response (daemon-status + state)

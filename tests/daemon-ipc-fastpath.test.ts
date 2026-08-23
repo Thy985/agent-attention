@@ -52,6 +52,11 @@ describe("ipc fast path (M6a)", () => {
     tmpDir = "";
   });
 
+  /** Read auth token from ipc-auth.secret. */
+  function readAuth(): string {
+    try { return fs.readFileSync(path.join(tmpDir, "ipc-auth.secret"), "utf8").trim(); } catch { return ""; }
+  }
+
   function drainSubscribe(client: net.Socket): Promise<void> {
     return new Promise<void>((resolve) => {
       let consumed = 0;
@@ -99,9 +104,10 @@ describe("ipc fast path (M6a)", () => {
     const portFile = path.join(tmpDir, "ipc-port.txt");
     const port = parseInt(fs.readFileSync(portFile, "utf8").trim(), 10);
 
+    const token = readAuth();
     const client = net.createConnection(port, "127.0.0.1");
     await new Promise<void>(r => client.once("connect", r));
-    client.write(JSON.stringify({ type: "subscribe" }) + "\n");
+    client.write(JSON.stringify({ type: "hello", token }) + "\n");
     await drainSubscribe(client);
 
     const t0 = Date.now();
@@ -146,9 +152,10 @@ describe("ipc fast path (M6a)", () => {
     const portFile = path.join(tmpDir, "ipc-port.txt");
     const port = parseInt(fs.readFileSync(portFile, "utf8").trim(), 10);
 
+    const token = readAuth();
     const client = net.createConnection(port, "127.0.0.1");
     await new Promise<void>(r => client.once("connect", r));
-    client.write(JSON.stringify({ type: "subscribe" }) + "\n");
+    client.write(JSON.stringify({ type: "hello", token }) + "\n");
     await drainSubscribe(client);
 
     emitNotification(tmpDir, "state-changed", { file: "state", sha256: "xyz" });

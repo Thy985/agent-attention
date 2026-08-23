@@ -32,6 +32,7 @@ public sealed class IpcClient : IDisposable
     private Task? _connectTask;
     private int _port;
     private readonly Dictionary<string, TaskCompletionSource<PipeMessage>> _pendingCommands = new();
+    private string? _token;
 
     public event Action<AttentionState>? OnStateUpdate;
     public event Action? OnRegistryReload;
@@ -57,6 +58,7 @@ public sealed class IpcClient : IDisposable
         _stateDir=stateDir;
         _store=store;
         _port=ReadPort(stateDir);
+        _token=ReadAuthSecret(stateDir);
     }
 
     public void Start()
@@ -116,6 +118,8 @@ public sealed class IpcClient : IDisposable
                 using var stream=client.GetStream();
                 using var writer=new StreamWriter(stream,new UTF8Encoding(false)){AutoFlush=true};
                 using var reader=new StreamReader(stream,new UTF8Encoding(false));
+                // M8 P0: auth handshake before subscribe
+                await writer.WriteLineAsync("{\"type\":\"hello\",\"token\":\""+_token+"\"}");
                 await writer.WriteLineAsync("{\"type\":\"subscribe\"}");
                 while(_running && client.Connected)
                 {
@@ -136,6 +140,9 @@ public sealed class IpcClient : IDisposable
                                 break;
                             case "daemon-status":
                                 if(msg.Status!=null)OnDaemonStatus?.Invoke(msg.Status);
+                                break;
+                            case "auth-rejected":
+                                _running=false;
                                 break;
                             case "cmd-ack":
                                 if(msg.RequestId!=null
@@ -158,6 +165,22 @@ public sealed class IpcClient : IDisposable
                 await Task.Delay(1000);
             }
         }
+    }
+
+    /// <summary>M8 P0: Read the IPC auth secret for token-based authentication.</summary>
+    private static string? ReadAuthSecret(string stateDir)
+    {
+        try
+        {
+            var secretFile=Path.Combine(stateDir,"ipc-auth.secret");
+            if(File.Exists(secretFile))
+            {
+                var v=File.ReadAllText(secretFile).Trim();
+                return v.Length>=32?v:null;
+            }
+        }
+        catch{}
+        return null;
     }
 
     private static int ReadPort(string stateDir)

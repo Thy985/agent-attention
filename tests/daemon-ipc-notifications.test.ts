@@ -25,13 +25,22 @@ describe("ipc notifications (M5)", () => {
   /**
    * Connect, subscribe, consume daemon-status + state responses, return socket.
    */
-  function connectAndDrain(port: number): Promise<net.Socket | null> {
-    return new Promise((resolve) => {
+  /** Read auth token from ipc-auth.secret. */
+  function readAuth(): string {
+    try { return fs.readFileSync(path.join(tmpDir, "ipc-auth.secret"), "utf8").trim(); } catch { return ""; }
+  }
+
+  /**
+   * Connect, send hello handshake, subscribe, consume daemon-status + state responses, return socket.
+   */
+  async function connectAndDrain(port: number): Promise<net.Socket | null> {
+    return new Promise(async (resolve) => {
       const client = net.createConnection(port, "127.0.0.1");
       client.on("error", () => resolve(null));
       let consumed = 0;
       const totalExpected = 2; // daemon-status + state
       const handler = (data: Buffer) => {
+        console.log("[TEST] data:", data.toString().trim().substring(0, 200));
         consumed += data.toString().split("\n").filter(Boolean).length;
         if (consumed >= totalExpected) {
           client.removeListener("data", handler);
@@ -39,9 +48,14 @@ describe("ipc notifications (M5)", () => {
         }
       };
       client.on("data", handler);
+      const token = readAuth();
+      console.log("[TEST] cd token_len=", token.length, "token=", token.substring(0, 8));
       client.once("connect", () => {
-        client.write(JSON.stringify({ type: "subscribe" }) + "\n");
+        client.write(JSON.stringify({ type: "hello", token }) + "\n");
       });
+      // Send subscribe after hello is processed
+      await new Promise(r => setTimeout(r, 50));
+      client.write(JSON.stringify({ type: "subscribe" }) + "\n");
       setTimeout(() => {
         client.removeListener("data", handler);
         client.destroy();
@@ -55,6 +69,7 @@ describe("ipc notifications (M5)", () => {
     return new Promise((resolve) => {
       let buf = "";
       const handler = (data: Buffer) => {
+        console.log("[TEST] data:", data.toString().trim().substring(0, 200));
         buf += data.toString();
         const idx = buf.indexOf("\n");
         if (idx !== -1) {
@@ -119,8 +134,11 @@ describe("ipc notifications (M5)", () => {
     const portFile = path.join(tmpDir, "ipc-port.txt");
     const port = parseInt(fs.readFileSync(portFile, "utf8").trim(), 10);
 
+    const token = readAuth();
     const client = net.createConnection(port, "127.0.0.1");
     await new Promise<void>(r => client.once("connect", r));
+    client.write(JSON.stringify({ type: "hello", token }) + "\n");
+    await new Promise(r => setTimeout(r, 50));
     client.write(JSON.stringify({ type: "subscribe" }) + "\n");
 
     // Collect all lines until we have both daemon-status and state
@@ -128,6 +146,7 @@ describe("ipc notifications (M5)", () => {
     await new Promise<void>(resolve => {
       let buf = "";
       const handler = (data: Buffer) => {
+        console.log("[TEST] data:", data.toString().trim().substring(0, 200));
         buf += data.toString();
         let idx: number;
         while ((idx = buf.indexOf("\n")) !== -1) {

@@ -71,6 +71,10 @@ describe("ipc command RPC (M6b)", () => {
     });
   }
 
+  function readAuth(): string {
+    try { return fs.readFileSync(path.join(tmpDir, "ipc-auth.secret"), "utf8").trim(); } catch { return ""; }
+  }
+
   it("registerRpcCommand + executeRpcCommand dispatches to handler", async () => {
     const handler = jest.fn(async () => ({ ok: true, code: 0 }));
     registerRpcCommand("test-cmd", handler);
@@ -89,8 +93,11 @@ describe("ipc command RPC (M6b)", () => {
     const portFile = path.join(tmpDir, "ipc-port.txt");
     const port = parseInt(fs.readFileSync(portFile, "utf8").trim(), 10);
 
+    const token = readAuth();
     const client = net.createConnection(port, "127.0.0.1");
     await new Promise<void>(r => client.once("connect", r));
+    client.write(JSON.stringify({ type: "hello", token }) + "\n");
+    await new Promise(r => setTimeout(r, 50));
     client.write(JSON.stringify({ type: "subscribe" }) + "\n");
     await drainSubscribe(client);
 
@@ -144,8 +151,11 @@ describe("ipc command RPC (M6b)", () => {
     const portFile = path.join(tmpDir, "ipc-port.txt");
     const port = parseInt(fs.readFileSync(portFile, "utf8").trim(), 10);
 
+    const token = readAuth();
     const client = net.createConnection(port, "127.0.0.1");
     await new Promise<void>(r => client.once("connect", r));
+    client.write(JSON.stringify({ type: "hello", token }) + "\n");
+    await new Promise(r => setTimeout(r, 50));
     client.write(JSON.stringify({ type: "subscribe" }) + "\n");
     await drainSubscribe(client);
 
