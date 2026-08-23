@@ -4,7 +4,8 @@ import * as path from 'path';
 export type UiMode = 'csharp' | 'ps';
 
 export function getUiMode(): UiMode {
-  return process.env.AGENT_ATTENTION_UI?.toLowerCase() === 'csharp' ? 'csharp' : 'ps';
+  // M7: default is csharp; AGENT_ATTENTION_UI=ps rolls back to PowerShell
+  return process.env.AGENT_ATTENTION_UI?.toLowerCase() === 'ps' ? 'ps' : 'csharp';
 }
 
 export function resolveNativeUiPath(): string | null {

@@ -6,7 +6,8 @@ import * as os from 'os';
 import { spawn, ChildProcess } from 'child_process';
 import { readState } from './state/AttentionState';
 import { getUiMode, resolveNativeUiPath } from './ui-host';
-import { startPipeServer, pushStateToClients, stopPipeServer, emitNotification, watchRegistryForNotifications } from './pipeline/ipc';
+import { startPipeServer, pushStateToClients, stopPipeServer, emitNotification, watchRegistryForNotifications, registerRpcCommand } from './pipeline/ipc';
+import { dispatchCommand } from './commands';
 
 export interface DaemonOptions {
   statePath: string;
@@ -231,6 +232,18 @@ export function createDaemon(options: DaemonOptions): Daemon {
   if (options.uiExecutablePath) {
     startPipeServer(stateDir);
     watchRegistryForNotifications(stateDir);
+    // M6b: register IPC RPC command handlers
+    registerRpcCommand("mark-all-read", async () => {
+      const r = dispatchCommand("mark-all-read", []);
+      emitNotification(stateDir, "state-changed", { file: "state", sha256: "" });
+      return r;
+    });
+    registerRpcCommand("mark-event", async (args) => {
+      return dispatchCommand("mark-event", args);
+    });
+    registerRpcCommand("jump", async (args) => {
+      return dispatchCommand("jump", args);
+    });
   }
   spawnTray();
 

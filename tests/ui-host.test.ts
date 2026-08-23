@@ -14,8 +14,13 @@ describe('UI host mode', () => {
     else process.env.AGENT_ATTENTION_UI_EXE = previousOverride;
   });
 
-  it('defaults to the PowerShell host', () => {
+  it('defaults to the C# host (M7)', () => {
     delete process.env.AGENT_ATTENTION_UI;
+    expect(getUiMode()).toBe('csharp');
+  });
+
+  it('AGENT_ATTENTION_UI=ps rolls back to PowerShell host', () => {
+    process.env.AGENT_ATTENTION_UI = 'ps';
     expect(getUiMode()).toBe('ps');
   });
 

@@ -35,14 +35,14 @@ describe("toast routing (M4)", () => {
     expect(fs.existsSync(exe!)).toBe(true);
   });
 
-  it("ps mode falls back to powershell", () => {
+  it("AGENT_ATTENTION_UI=ps selects PowerShell host", () => {
     process.env.AGENT_ATTENTION_UI = "ps";
     expect(getUiMode()).toBe("ps");
   });
 
-  it("default mode is ps when env not set", () => {
+  it("default mode is csharp (M7) when env not set", () => {
     delete process.env.AGENT_ATTENTION_UI;
-    expect(getUiMode()).toBe("ps");
+    expect(getUiMode()).toBe("csharp");
   });
 
   it("win32.ts spawn args include -StatePath and -RegistryPath for csharp", () => {
