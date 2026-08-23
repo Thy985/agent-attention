@@ -312,3 +312,79 @@ PASS tests/daemon-ipc.test.ts  (all 5 pass, updated for dual-response protocol)
 ## Commit
 
 `3a93db0` — feat(ipc): M5 shadow notification channel
+
+
+---
+
+# M6 — Pipe Fast Path + Command RPC
+
+## Status: **PASS**
+
+## M6a: IPC as refresh fast path
+
+| Change | File | Purpose |
+|---|---|---|
+| Drop 500ms polling timer when IPC active | TrayController.cs | Updates driven by OnIpcStateUpdate |
+| OnReconnect rebuilds full snapshot | TrayController.cs + IpcClient.cs | Refresh from state.json after reconnect |
+| OnDaemonStatus handles stopping | TrayController.cs | Graceful exit on daemon stop signal |
+| Random port range (35000-45000) | ipc.ts | Avoid EADDRINUSE in test environments |
+
+### Test results
+
+`
+PASS tests/daemon-ipc-fastpath.test.ts
+  tray-state.json written on state change with IPC active
+  emitNotification delivers state-changed within 50ms
+  stopPipeServer is safe to call after already stopped
+  state-changed notification delivers correct payload
+  IPC fast path: no stale tray-state.json after stop
+`
+
+## M6b: Bidirectional command RPC
+
+| Change | File | Purpose |
+|---|---|---|
+| New shared command module | src/commands.ts | cmdMarkAllRead, cmdMarkEvent, cmdJump, dispatchCommand |
+| RPC server handlers | ipc.ts + daemon.ts | registerRpcCommand, cmd→cmd-ack protocol |
+| RPC client with ack | IpcClient.cs | SendCommand(requestId, 5s timeout) |
+| RPC-first command runner | CommandRunner.cs | Try IPC, fall back to CLI spawn |
+| Program wiring | Program.cs | IpcClient → CommandRunner → TrayController |
+
+### Test results
+
+`
+PASS tests/daemon-ipc-rpc.test.ts
+  registerRpcCommand + executeRpcCommand dispatches to handler
+  unknown command returns error via RPC
+  registered mark-all-read handler returns ack
+  RPC command fails gracefully when no server
+  daemon registers RPC handlers and handles mark-event
+`
+
+## Full suite: **138/138 pass** (was 133 before M6; +5 new)
+## Lifecycle: **13/13 pass** (unchanged)
+
+## Architecture (post-M6)
+
+`
+Node/TS Core
+    ↓
+daemon
+    ├─ startPipeServer (TCP 35000-45000)
+    ├─ watchRegistryForNotifications (1s poll)
+    ├─ emit state-changed on state.json change
+    ├─ registerRpcCommand: mark-all-read, mark-event, jump
+    └─ spawn AgentAttention.UI.exe
+         ↓
+    AgentAttention.UI.exe
+        ├── WinForms Tray
+        │   ├─ IpcClient (connect, subscribe, receive notifications)
+        │   ├─ OnIpcStateUpdate → drives icon/menu (fast path)
+        │   ├─ OnReconnect → Refresh() from state.json (rebuild)
+        │   └─ CommandRunner: RPC first, CLI fallback
+        └── WPF Center (file polling, ≤8 events)
+`
+
+## Commit
+
+M6-fast-path-and-rpc
