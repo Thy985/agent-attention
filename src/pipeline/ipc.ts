@@ -2,6 +2,7 @@ import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as crypto from 'crypto';
 import { readState } from '../state/AttentionState';
 import { daemonLog } from '../daemon';
 
@@ -12,9 +13,15 @@ export function getUserToken(): string {
   return os.userInfo().username.replace(/\\/g, '_');
 }
 
-/** Build the full named pipe path for this user. */
+/** Build the full named pipe path for this user (documented; TCP used at runtime). */
 export function getPipePath(): string {
   return `\\\\.\\pipe\\${PIPE_BASE}${getUserToken()}`;
+}
+
+/** SHA-256 of file contents — used for dedup in state-changed notifications. */
+function fileSha256(filePath: string): string {
+  try { return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex'); }
+  catch { return ''; }
 }
 
 interface PipeState {
@@ -30,20 +37,15 @@ let _port = 0;
 export function startPipeServer(stateDir: string): void {
   _state = null;
   _port = 0;
-  const token = getUserToken();
-  const pipeName = `${PIPE_BASE}${token}`;
   const statePath = path.join(stateDir, 'state.json');
 
   _state = { server: null, clients: new Map(), stopped: false };
 
-  // Try Named Pipe first (Windows only)
   const isWindows = process.platform === 'win32';
 
   if (isWindows) {
     try {
-      // Use a raw socket to create a named pipe server
-      // Node.js doesn't have built-in named pipe support, so we use a workaround
-      // with a high-port TCP server and write the pipe name to a port file
+      const token = getUserToken();
       const basePort = 29876;
       const port = basePort + (token.charCodeAt(0) % 100);
 
@@ -56,6 +58,16 @@ export function startPipeServer(stateDir: string): void {
           try {
             const msg = JSON.parse(data.toString());
             if (msg.type === 'subscribe') {
+              // M5: send daemon-status:alive then full state snapshot
+              try {
+                const aliveMsg = JSON.stringify({
+                  type: 'daemon-status',
+                  payload: { status: 'alive', pid: process.pid },
+                });
+                socket.write(aliveMsg + '\n');
+              } catch (err) {
+                daemonLog(`ipc daemon-status write failed: ${err}`);
+              }
               try {
                 const st = readState(statePath);
                 const reply = JSON.stringify({ type: 'state', state: st });
@@ -83,7 +95,6 @@ export function startPipeServer(stateDir: string): void {
       server.listen(port, '127.0.0.1', () => {
         const addr = server.address() as net.AddressInfo;
         _port = addr.port;
-        // Write port file so C# client knows where to connect
         try {
           const portFile = path.join(stateDir, 'ipc-port.txt');
           fs.writeFileSync(portFile, String(addr.port));
@@ -97,11 +108,38 @@ export function startPipeServer(stateDir: string): void {
     } catch {}
   }
 
-  // Fallback: no IPC server started
   daemonLog('ipc: no server started (non-Windows or port conflict)');
 }
 
-/** Push state to all connected IPC clients. */
+/**
+ * Broadcast a notification to all connected IPC clients.
+ *
+ * Notification types (M5 contract):
+ *   - "state"          : full state snapshot (pushStateToClients legacy path)
+ *   - "state-changed"  : lightweight SHA-256 pointer; UI reads state.json for content
+ *   - "registry-changed": agents.json changed; UI reloads agent list
+ *   - "daemon-status"  : daemon lifecycle signal (alive / stopping)
+ */
+export function emitNotification(
+  stateDir: string,
+  type: 'state' | 'state-changed' | 'registry-changed' | 'daemon-status',
+  payload: unknown,
+): void {
+  if (!_state?.server || _state.stopped || _port === 0) return;
+  const msg = JSON.stringify({ type, payload });
+  for (const [id, socket] of _state.clients) {
+    try {
+      if (!socket.destroyed && socket.writable) {
+        socket.write(msg + '\n');
+      }
+    } catch (err) {
+      daemonLog(`ipc notify send failed (${id}): ${err}`);
+      _state.clients.delete(id);
+    }
+  }
+}
+
+/** Push full state snapshot to all connected IPC clients (legacy path). */
 export function pushStateToClients(stateDir: string): void {
   if (!_state?.server || _state.stopped || _port === 0) return;
   const statePath = path.join(stateDir, 'state.json');
@@ -126,11 +164,38 @@ export function pushStateToClients(stateDir: string): void {
   }
 }
 
+/**
+ * Watch agents.json and emit registry-changed notifications when it changes.
+ * Called by daemon.ts after startPipeServer().
+ */
+export function watchRegistryForNotifications(stateDir: string): void {
+  if (!_state?.server || _state.stopped || _port === 0) return;
+  const registryPath = path.join(stateDir, 'agents.json');
+  let lastHash = '';
+  try {
+    lastHash = fileSha256(registryPath);
+  } catch {}
+
+  const check = (): void => {
+    if (_state?.stopped) return;
+    try {
+      const hash = fileSha256(registryPath);
+      if (hash !== lastHash && hash !== '') {
+        lastHash = hash;
+        emitNotification(stateDir, 'registry-changed', { file: 'agents', sha256: hash });
+      }
+    } catch {}
+    setTimeout(check, 1000);
+  };
+  setTimeout(check, 500);
+}
+
 /** Stop the IPC server. */
 export function stopPipeServer(): void {
   _port = 0;
   if (!_state) return;
   _state.stopped = true;
+  emitNotification('', 'daemon-status', { status: 'stopping' });
   for (const [, socket] of _state.clients) {
     try { socket.destroy(); } catch {}
   }

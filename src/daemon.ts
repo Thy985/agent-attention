@@ -6,7 +6,7 @@ import * as os from 'os';
 import { spawn, ChildProcess } from 'child_process';
 import { readState } from './state/AttentionState';
 import { getUiMode, resolveNativeUiPath } from './ui-host';
-import { startPipeServer, pushStateToClients, stopPipeServer } from './pipeline/ipc';
+import { startPipeServer, pushStateToClients, stopPipeServer, emitNotification, watchRegistryForNotifications } from './pipeline/ipc';
 
 export interface DaemonOptions {
   statePath: string;
@@ -215,6 +215,7 @@ export function createDaemon(options: DaemonOptions): Daemon {
   watcher.on('change', () => {
     log(`state.json changed`);
     debouncedReload();
+    emitNotification(stateDir, 'state-changed', { file: 'state', sha256: crypto.createHash('sha256').update(fs.readFileSync(options.statePath)).digest('hex') });
   });
 
   watcher.on('add', () => {
@@ -229,6 +230,7 @@ export function createDaemon(options: DaemonOptions): Daemon {
   // Start IPC server for C# UI mode (real-time state push)
   if (options.uiExecutablePath) {
     startPipeServer(stateDir);
+    watchRegistryForNotifications(stateDir);
   }
   spawnTray();
 

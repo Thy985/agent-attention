@@ -11,6 +11,12 @@ namespace AgentAttention.UI;
 /// <summary>
 /// IPC client that connects to the daemon state-push server over TCP.
 /// Falls back to file polling when the server is unavailable.
+///
+/// M5 notification contract:
+///   "state"          → full snapshot; drives OnStateUpdate
+///   "state-changed"  → lightweight pointer; UI reads state.json itself
+///   "registry-changed" → agents.json changed; drives OnRegistryReload
+///   "daemon-status"  → lifecycle signal (alive/stopping); drives OnDaemonStatus
 /// </summary>
 public sealed class IpcClient : IDisposable
 {
@@ -21,6 +27,8 @@ public sealed class IpcClient : IDisposable
     private int _port;
 
     public event Action<AttentionState>? OnStateUpdate;
+    public event Action? OnRegistryReload;
+    public event Action<string>? OnDaemonStatus;
 
     public bool IsConnected => _port > 0;
 
@@ -76,8 +84,20 @@ public sealed class IpcClient : IDisposable
                     try
                     {
                         var msg=System.Text.Json.JsonSerializer.Deserialize<PipeMessage>(line,Json.Options);
-                        if(msg?.Type=="state" && msg.State!=null)
-                            OnStateUpdate?.Invoke(msg.State);
+                        if(msg==null)continue;
+                        switch(msg.Type)
+                        {
+                            case "state":
+                            case "state-changed":
+                                if(msg.State!=null)OnStateUpdate?.Invoke(msg.State);
+                                break;
+                            case "registry-changed":
+                                OnRegistryReload?.Invoke();
+                                break;
+                            case "daemon-status":
+                                if(msg.Status!=null)OnDaemonStatus?.Invoke(msg.Status);
+                                break;
+                        }
                     }
                     catch{}
                 }
@@ -115,4 +135,6 @@ internal sealed class PipeMessage
     public string? Type { get; set; }
     [System.Text.Json.Serialization.JsonPropertyName("state")]
     public AttentionState? State { get; set; }
+    [System.Text.Json.Serialization.JsonPropertyName("status")]
+    public string? Status { get; set; }
 }
