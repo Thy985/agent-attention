@@ -65,7 +65,15 @@ internal static class Program
             Log("activation event created");
 
             var store=new StateStore(options);
-            var commands=new CommandRunner(options.CliPath);
+            // M6b: create IPC client first, then wrap commands with RPC+CLI fallback
+            IpcClient? ipc=null;
+            var stateDir=Path.GetDirectoryName(options.StatePath);
+            if(!string.IsNullOrWhiteSpace(stateDir)&&IpcClient.CanConnect(stateDir))
+            {
+                ipc=new IpcClient(stateDir,store);
+            }
+            var cliRunner=new CliCommandRunner(options.CliPath);
+            var commands=new CommandRunner(ipc,cliRunner.MarkAllRead,cliRunner.MarkRead,cliRunner.Jump);
             var window=new CenterWindow(store,commands);
             Log("window constructed");
             window.Closed+=(_,_)=>Log("window closed");

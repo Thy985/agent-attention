@@ -1,10 +1,12 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
-using System.IO.Pipes;
 using System.Linq;
-using System.Threading.Tasks;
-using System.Text;
 using System.Net.Sockets;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Text.Json;
 
 namespace AgentAttention.UI;
 
@@ -13,10 +15,14 @@ namespace AgentAttention.UI;
 /// Falls back to file polling when the server is unavailable.
 ///
 /// M5 notification contract:
-///   "state"          → full snapshot; drives OnStateUpdate
-///   "state-changed"  → lightweight pointer; UI reads state.json itself
-///   "registry-changed" → agents.json changed; drives OnRegistryReload
-///   "daemon-status"  → lifecycle signal (alive/stopping); drives OnDaemonStatus
+///   "state"              -> full snapshot; drives OnStateUpdate
+///   "state-changed"      -> lightweight pointer; UI reads state.json itself
+///   "registry-changed"   -> agents.json changed; drives OnRegistryReload
+///   "daemon-status"      -> lifecycle signal (alive/stopping); drives OnDaemonStatus
+///
+/// M6b RPC contract:
+///   "cmd"                -> client request; server handles and replies with "cmd-ack"
+///   "cmd-ack"            -> server response; drives pending TaskCompletionSource
 /// </summary>
 public sealed class IpcClient : IDisposable
 {
@@ -25,6 +31,7 @@ public sealed class IpcClient : IDisposable
     private bool _running;
     private Task? _connectTask;
     private int _port;
+    private readonly Dictionary<string, TaskCompletionSource<PipeMessage>> _pendingCommands = new();
 
     public event Action<AttentionState>? OnStateUpdate;
     public event Action? OnRegistryReload;
@@ -65,6 +72,37 @@ public sealed class IpcClient : IDisposable
         _connectTask=null;
     }
 
+    /// <summary>M6b: Send a command via IPC and wait for ack. Returns null on timeout/failure.</summary>
+    public async Task<PipeMessage?> SendCommand(string command, params string[] args)
+    {
+        if(_port<=0)return null;
+        var requestId=Guid.NewGuid().ToString("N")[..8];
+        var tcs=new TaskCompletionSource<PipeMessage>();
+        _pendingCommands[requestId]=tcs;
+        try
+        {
+            using var client=new TcpClient();
+            await client.ConnectAsync("127.0.0.1",_port);
+            using var stream=client.GetStream();
+            using var writer=new StreamWriter(stream,new UTF8Encoding(false)){AutoFlush=true};
+            var payload=new { type="cmd", requestId, command, args };
+            var json=JsonSerializer.Serialize(payload,Json.Options);
+            await writer.WriteLineAsync(json);
+            using var cts=new CancellationTokenSource(5000);
+            cts.Token.Register(()=>{
+                if(_pendingCommands.Remove(requestId,out var failed))
+                    failed.SetResult(null!);
+            });
+            return await tcs.Task;
+        }
+        catch(Exception)
+        {
+            if(_pendingCommands.Remove(requestId,out var failed))
+                failed.SetResult(null!);
+            return null;
+        }
+    }
+
     public void Dispose()=>Stop();
 
     private async Task ConnectLoop()
@@ -85,7 +123,7 @@ public sealed class IpcClient : IDisposable
                     if(line==null)break;
                     try
                     {
-                        var msg=System.Text.Json.JsonSerializer.Deserialize<PipeMessage>(line,Json.Options);
+                        var msg=JsonSerializer.Deserialize<PipeMessage>(line,Json.Options);
                         if(msg==null)continue;
                         switch(msg.Type)
                         {
@@ -99,12 +137,17 @@ public sealed class IpcClient : IDisposable
                             case "daemon-status":
                                 if(msg.Status!=null)OnDaemonStatus?.Invoke(msg.Status);
                                 break;
+                            case "cmd-ack":
+                                if(msg.RequestId!=null
+                                    && _pendingCommands.Remove(msg.RequestId,out var tcs))
+                                    tcs.SetResult(msg);
+                                break;
                         }
                     }
                     catch{}
                 }
                 await Task.Delay(500);
-                // Emit OnReconnect so TrayController can rebuild full snapshot from state.json
+                // M6a: reconnect → TrayController rebuilds full snapshot
                 OnReconnect?.Invoke();
                 var p=ReadPort(_stateDir);
                 if(p!=_port){_port=p;}
@@ -133,7 +176,7 @@ public sealed class IpcClient : IDisposable
     }
 }
 
-internal sealed class PipeMessage
+public sealed class PipeMessage
 {
     [System.Text.Json.Serialization.JsonPropertyName("type")]
     public string? Type { get; set; }
@@ -141,4 +184,12 @@ internal sealed class PipeMessage
     public AttentionState? State { get; set; }
     [System.Text.Json.Serialization.JsonPropertyName("status")]
     public string? Status { get; set; }
+    [System.Text.Json.Serialization.JsonPropertyName("requestId")]
+    public string? RequestId { get; set; }
+    [System.Text.Json.Serialization.JsonPropertyName("ok")]
+    public bool? Ok { get; set; }
+    [System.Text.Json.Serialization.JsonPropertyName("code")]
+    public int? Code { get; set; }
+    [System.Text.Json.Serialization.JsonPropertyName("error")]
+    public string? Error { get; set; }
 }

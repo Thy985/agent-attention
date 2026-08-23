@@ -30,8 +30,41 @@ interface PipeState {
   stopped: boolean;
 }
 
+type RpcHandler = (args: string[]) => Promise<{ ok: boolean; code: number; error?: string }>;
+
 let _state: PipeState | null = null;
 let _port = 0;
+const _handlers = new Map<string, RpcHandler>();
+
+/** Register a command handler for IPC RPC (M6b). */
+export function registerRpcCommand(name: string, handler: RpcHandler): void {
+  _handlers.set(name, handler);
+}
+
+/** Unregister a command handler. */
+export function unregisterRpcCommand(name: string): void {
+  _handlers.delete(name);
+}
+
+/** Execute a command via IPC and return the ack result. */
+export async function executeRpcCommand(
+  stateDir: string,
+  command: string,
+  args: string[],
+): Promise<{ ok: boolean; code: number; error?: string }> {
+  if (!_state?.server || _state.stopped || _port === 0) {
+    return { ok: false, code: 1, error: 'IPC not available' };
+  }
+  const handler = _handlers.get(command);
+  if (!handler) {
+    return { ok: false, code: 1, error: `Unknown command: ${command}` };
+  }
+  try {
+    return await handler(args);
+  } catch (err) {
+    return { ok: false, code: 1, error: String(err) };
+  }
+}
 
 /** Start the IPC server. On Windows uses Named Pipes; elsewhere uses TCP. */
 export function startPipeServer(stateDir: string): void {
@@ -82,6 +115,29 @@ export function startPipeServer(stateDir: string): void {
               } catch (err) {
                 daemonLog(`ipc initial state read failed: ${err}`);
               }
+            } else if (msg.type === 'cmd' && msg.requestId && msg.command) {
+              // M6b: handle RPC command
+              const handler = _handlers.get(msg.command);
+              if (!handler) {
+                const nack = JSON.stringify({
+                  type: 'cmd-ack', requestId: msg.requestId,
+                  ok: false, code: 1, error: `Unknown command: ${msg.command}`,
+                });
+                socket.write(nack + '\n');
+                return;
+              }
+              handler(msg.args ?? []).then(result => {
+                const ack = JSON.stringify({
+                  type: 'cmd-ack', requestId: msg.requestId, ...result,
+                });
+                socket.write(ack + '\n');
+              }).catch(err => {
+                const nack = JSON.stringify({
+                  type: 'cmd-ack', requestId: msg.requestId,
+                  ok: false, code: 1, error: String(err),
+                });
+                socket.write(nack + '\n');
+              });
             }
           } catch {}
         });
