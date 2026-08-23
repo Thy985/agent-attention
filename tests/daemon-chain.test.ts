@@ -53,8 +53,7 @@ describe("daemon full chain (M4)", () => {
 
   async function startDaemon(opts?: Partial<import("../src/daemon").DaemonOptions>) {
     const daemon = createDaemon({
-      statePath, powerShellPath: "powershell", trayScriptPath: "TrayIcon.ps1",
-      trayStatePath, trayPidPath, cliPath,
+      statePath, trayStatePath, trayPidPath, cliPath,
       uiExecutablePath: uiExe, debug: false,
       ...opts,
     });
@@ -118,20 +117,6 @@ describe("daemon full chain (M4)", () => {
     expect(callArgs[1]).toContain(trayStatePath);
     expect(callArgs[1]).toContain("-TrayPidPath");
     expect(callArgs[1]).toContain(trayPidPath);
-    await daemon.stop();
-  });
-
-  it("falls back to PowerShell when uiExecutablePath is undefined", async () => {
-    const daemon = createDaemon({
-      statePath, powerShellPath: "powershell", trayScriptPath: "TrayIcon.ps1",
-      trayStatePath, trayPidPath, cliPath, debug: false,
-    });
-    await new Promise(r => setTimeout(r, 300));
-    expect(mockedSpawn).toHaveBeenCalledWith(
-      "powershell",
-      expect.arrayContaining(["-File", "TrayIcon.ps1"]),
-      expect.any(Object),
-    );
     await daemon.stop();
   });
 });

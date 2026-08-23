@@ -192,8 +192,7 @@ describe("ipc command RPC (M6b)", () => {
 
   it("daemon registers RPC handlers and handles mark-event", async () => {
     const daemon = createDaemon({
-      statePath, powerShellPath: "powershell", trayScriptPath: "TrayIcon.ps1",
-      trayStatePath: path.join(tmpDir, "tray-state.json"),
+      statePath, trayStatePath: path.join(tmpDir, "tray-state.json"),
       trayPidPath: path.join(tmpDir, "tray.pid"),
       cliPath, uiExecutablePath: uiExe, debug: false,
     });

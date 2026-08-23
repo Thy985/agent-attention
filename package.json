@@ -30,7 +30,6 @@
   ],
   "files": [
     "dist/",
-    "src/center/*.ps1",
     "src/center/csharp/dist/win-x64/**/*"
   ],
   "license": "MIT",

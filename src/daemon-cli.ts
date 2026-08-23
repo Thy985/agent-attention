@@ -5,6 +5,7 @@ import * as os from 'os';
 import { execSync, spawn } from 'child_process';
 import { registerAgent, listAgents, getAgent, updateAgentTarget, AgentTarget } from './registry';
 import { clearUnread, markRead } from './state/AttentionState';
+import { resolveNativeUiPath } from './ui-host';
 
 /** Run a PowerShell script from a temp file to avoid shell escaping issues. */
 function runPs(script: string, timeoutMs = 5000): string {
@@ -432,9 +433,9 @@ function doctor(): void {
       detail: 'dist/daemon.js exists',
     },
     {
-      name: 'Tray script',
-      ok: fs.existsSync(path.join(__dirname, '..', 'src', 'center', 'TrayIcon.ps1')),
-      detail: 'src/center/TrayIcon.ps1 exists',
+      name: 'UI executable',
+      ok: resolveNativeUiPath() !== null,
+      detail: resolveNativeUiPath() !== null ? 'AgentAttention.UI.exe found' : 'NOT FOUND — run npm run build:ui && npm run publish:ui',
     },
     {
       name: 'State file',

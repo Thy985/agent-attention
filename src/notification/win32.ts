@@ -2,7 +2,7 @@ import * as path from 'path';
 import * as os from 'os';
 import notifier from 'node-notifier';
 import { EventName, EVENT_PRIORITY } from '../events';
-import { getUiMode, resolveNativeUiPath } from '../ui-host';
+import { resolveNativeUiPath } from '../ui-host';
 
 /** Title prefix shown on every Toast. */
 const APP_NAME = 'Agent Attention';
@@ -23,18 +23,6 @@ function getDaemonCliPath(): string {
   return local;
 }
 
-/** Resolve the CenterWindow.ps1 path. */
-function getCenterPath(): string {
-  const envPath = process.env.AGENT_ATTENTION_CENTER;
-  if (envPath) return envPath;
-  // After build, dist/notification/win32.js lives at dist/notification/win32.js.
-  // CenterWindow.ps1 is shipped under src/center/ via package.json "files".
-  // So from dist/notification/ we need to go up two levels to reach src/center/.
-  const local = path.join(__dirname, '..', '..', 'src', 'center', 'CenterWindow.ps1');
-  if (require('fs').existsSync(local)) return local;
-  return local;
-}
-
 /**
  * Send a Windows Toast notification with action buttons.
  * Clicking "View" opens the Center window; "Dismiss" marks all read.
@@ -47,7 +35,6 @@ export async function notify(
 ): Promise<void> {
   const isUrgent = EVENT_PRIORITY[event] === 'P0';
   const cliPath = getDaemonCliPath();
-  const centerPath = getCenterPath();
   const stateDir   = path.join(os.homedir(), '.agent-attention');
 
   await new Promise<void>((resolve, reject) => {
@@ -74,24 +61,15 @@ export async function notify(
           // Open Center window on toast click or "View" button
           try {
             const { spawn } = require('child_process');
-            if (getUiMode() === 'csharp') {
-              const uiExecutable = resolveNativeUiPath();
-              if (!uiExecutable) throw new Error('AgentAttention.UI.exe not found');
-              spawn(uiExecutable, [
-                '-StatePath', path.join(stateDir, 'state.json'),
-                '-RegistryPath', path.join(stateDir, 'agents.json'),
-                '-CliPath', cliPath,
-                '-TrayStatePath', path.join(stateDir, 'tray-state.json'),
-                '-OpenCenter',
-              ], { windowsHide: true });
-            } else {
-              spawn('powershell', [
-                '-NoProfile', '-ExecutionPolicy', 'Bypass',
-                '-File', centerPath,
-                '-StatePath', path.join(stateDir, 'state.json'),
-                '-RegistryPath', path.join(stateDir, 'agents.json'),
-              ], { windowsHide: true });
-            }
+            const uiExecutable = resolveNativeUiPath();
+            if (!uiExecutable) throw new Error('AgentAttention.UI.exe not found');
+            spawn(uiExecutable, [
+              '-StatePath', path.join(stateDir, 'state.json'),
+              '-RegistryPath', path.join(stateDir, 'agents.json'),
+              '-CliPath', cliPath,
+              '-TrayStatePath', path.join(stateDir, 'tray-state.json'),
+              '-OpenCenter',
+            ], { windowsHide: true });
           } catch (err) {
             try { console.warn(`[agent-notify] failed to open Center: ${err instanceof Error ? err.message : String(err)}`); } catch {}
           }

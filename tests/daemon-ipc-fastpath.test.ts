@@ -72,8 +72,7 @@ describe("ipc fast path (M6a)", () => {
     await new Promise(r => setTimeout(r, 300));
 
     const daemon = createDaemon({
-      statePath, powerShellPath: "powershell", trayScriptPath: "TrayIcon.ps1",
-      trayStatePath, trayPidPath: path.join(tmpDir, "tray.pid"),
+      statePath, trayStatePath, trayPidPath: path.join(tmpDir, "tray.pid"),
       cliPath, uiExecutablePath: uiExe, debug: false,
     });
     await new Promise(r => setTimeout(r, 500));
@@ -183,8 +182,7 @@ describe("ipc fast path (M6a)", () => {
 
   it("IPC fast path: no stale tray-state.json after stop", async () => {
     const daemon = createDaemon({
-      statePath, powerShellPath: "powershell", trayScriptPath: "TrayIcon.ps1",
-      trayStatePath, trayPidPath: path.join(tmpDir, "tray.pid"),
+      statePath, trayStatePath, trayPidPath: path.join(tmpDir, "tray.pid"),
       cliPath, uiExecutablePath: uiExe, debug: false,
     });
     await new Promise(r => setTimeout(r, 500));

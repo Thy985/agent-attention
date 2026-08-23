@@ -43,9 +43,8 @@ describe('daemon-csharp (L3 unit)', () => {
     }));
     fs.writeFileSync(cliPath, 'module.exports={};');
     options = {
-      statePath, powerShellPath: 'powershell', trayScriptPath: 'src/center/TrayIcon.ps1',
-      trayStatePath, trayPidPath, cliPath,
-      uiExecutablePath: uiExe ?? undefined, debug: false,
+      statePath, trayStatePath, trayPidPath, cliPath,
+      uiExecutablePath: uiExe!, debug: false,
     };
     mockedSpawn.mockClear();
   });
@@ -126,14 +125,4 @@ describe('daemon-csharp (L3 unit)', () => {
     await daemon.stop();
   });
 
-  it('uses PowerShell path when uiExecutablePath is absent', async () => {
-    const daemon = createDaemon({ ...options!, uiExecutablePath: undefined });
-    await new Promise(r => setTimeout(r, 100));
-    expect(mockedSpawn).toHaveBeenCalledWith(
-      'powershell',
-      expect.arrayContaining(['-File', 'src/center/TrayIcon.ps1']),
-      expect.any(Object),
-    );
-    await daemon.stop();
-  });
 });

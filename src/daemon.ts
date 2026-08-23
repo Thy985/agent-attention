@@ -11,12 +11,10 @@ import { dispatchCommand } from './commands';
 
 export interface DaemonOptions {
   statePath: string;
-  powerShellPath: string;
-  trayScriptPath: string;
-  trayStatePath: string;   // polling file written by daemon, read by TrayIcon.ps1
+  trayStatePath: string;   // polling file written by daemon, read by C# tray
   trayPidPath: string;     // PID file for tray lifecycle management
   cliPath: string;         // absolute path to daemon-cli.js (for tray double-click)
-  uiExecutablePath?: string; // native UI host; when omitted, spawn TrayIcon.ps1
+  uiExecutablePath: string; // native C# UI host
   debug?: boolean;
 }
 
@@ -97,7 +95,7 @@ export function createDaemon(options: DaemonOptions): Daemon {
     });
   }
 
-  /** Write current state to the polling file that TrayIcon.ps1 reads. */
+  /** Write current state to the polling file that the C# tray reads. */
   const pushStateToTrayFile = (): void => {
     // P3-7 fix: guard against a debounced push landing after stop() began.
     // Without this, stop() deletes tray-state.json to signal the tray to
@@ -145,48 +143,26 @@ export function createDaemon(options: DaemonOptions): Daemon {
   };
 
   const spawnTray = () => {
-    if (options.uiExecutablePath) {
-      log(`spawning UI host: ${options.uiExecutablePath}`);
-      const registryPath = path.join(path.dirname(options.statePath), 'agents.json');
-      const trayArgs = [
-          '-StatePath', options.statePath,
-          '-RegistryPath', registryPath,
-          '-CliPath', options.cliPath,
-          '-TrayStatePath', options.trayStatePath,
-        ];
-      if (options.trayPidPath) trayArgs.push('-TrayPidPath', options.trayPidPath);
 
-      trayProc = spawn(
-        options.uiExecutablePath,
-        trayArgs,
-        {
-          stdio: ['ignore', 'ignore', 'pipe'],
-          windowsHide: true,
-          detached: false,
-        },
-      );
-    } else {
-      log(`spawning tray: ${options.powerShellPath} ${options.trayScriptPath}`);
-      const trayArgs = [
-          '-NoProfile',
-          '-ExecutionPolicy', 'Bypass',
-          '-File', options.trayScriptPath,
-          '-StatePath', options.statePath,
-          '-CliPath', options.cliPath,
-          '-TrayStatePath', options.trayStatePath,
-        ];
-      if (options.trayPidPath) trayArgs.push('-TrayPidPath', options.trayPidPath);
+  log(`spawning UI host: ${options.uiExecutablePath}`);
+  const registryPath = path.join(path.dirname(options.statePath), 'agents.json');
+  const trayArgs = [
+      '-StatePath', options.statePath,
+      '-RegistryPath', registryPath,
+      '-CliPath', options.cliPath,
+      '-TrayStatePath', options.trayStatePath,
+    ];
+  if (options.trayPidPath) trayArgs.push('-TrayPidPath', options.trayPidPath);
 
-      trayProc = spawn(
-        options.powerShellPath,
-        trayArgs,
-        {
-          stdio: ['ignore', 'ignore', 'pipe'],
-          windowsHide: true,
-          detached: false,
-        },
-      );
-    }
+  trayProc = spawn(
+    options.uiExecutablePath,
+    trayArgs,
+    {
+      stdio: ['ignore', 'ignore', 'pipe'],
+      windowsHide: true,
+      detached: false,
+    },
+  );
 
     // Write PID file so orphan cleanup can target this exact process (issue #1)
     writeTrayPid(options.trayPidPath, trayProc.pid!);
@@ -306,23 +282,17 @@ if (require.main === module) {
   const trayStatePath = path.join(stateDir, 'tray-state.json');
   const trayPidPath   = path.join(stateDir, 'tray.pid');
   const daemonLockPath = path.join(stateDir, 'daemon.lock');
-  const trayScriptPath = path.join(__dirname, '..', 'src', 'center', 'TrayIcon.ps1');
   // P1-5 fix: this module runs as dist/daemon.js, so daemon-cli.js is its
   // sibling at dist/daemon-cli.js. (The old '..\\dist\\daemon-cli.js'
   // resolved to dist/dist/daemon-cli.js, which never exists.)
   const cliPath        = path.join(__dirname, 'daemon-cli.js');
 
-  let uiExecutablePath: string | undefined;
-  if (getUiMode() === 'csharp') {
-    const nativeUiPath = resolveNativeUiPath();
-    if (!nativeUiPath) {
-      console.error(
-        'AGENT_ATTENTION_UI=csharp but AgentAttention.UI.exe was not found. '
-        + 'Build it or set AGENT_ATTENTION_UI_EXE.',
-      );
-      process.exit(1);
-    }
-    uiExecutablePath = nativeUiPath;
+  const uiExecutablePath = resolveNativeUiPath();
+  if (!uiExecutablePath) {
+    console.error(
+      'AgentAttention.UI.exe not found. Build it or set AGENT_ATTENTION_UI_EXE.'
+    );
+    process.exit(1);
   }
 
   const debug = process.env.AGENT_ATTENTION_DEBUG === '1';
@@ -387,8 +357,6 @@ if (require.main === module) {
 
   const daemon = createDaemon({
     statePath,
-    powerShellPath: 'powershell',
-    trayScriptPath,
     trayStatePath,
     trayPidPath,
     cliPath,
@@ -427,5 +395,5 @@ if (require.main === module) {
   });
 
   daemonLog(`started, watching ${statePath}`, debug);
-  daemonLog(`tray polling file: ${trayStatePath}`, debug);
+  daemonLog(`tray polling file: ${trayStatePath}`, debug)  // C# tray reads this
 }
