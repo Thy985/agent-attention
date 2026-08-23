@@ -44,6 +44,7 @@ describe('daemon (file-polling architecture)', () => {
     options.trayStatePath = opts.trayStatePath;
     options.trayPidPath   = opts.trayPidPath;
     options.cliPath       = opts.cliPath;
+    options.uiExecutablePath = undefined;
     mockedSpawn.mockClear();
   });
 
@@ -68,6 +69,26 @@ describe('daemon (file-polling architecture)', () => {
     expect(mockedSpawn).toHaveBeenCalledWith(
       'powershell',
       expect.arrayContaining(['-File', 'src/center/TrayIcon.ps1']),
+      expect.objectContaining({ stdio: ['ignore', 'ignore', 'pipe'] }),
+    );
+  });
+
+  it('spawns the native UI host when configured', async () => {
+    const executable = path.join(tmpDir, 'AgentAttention.UI.exe');
+    fs.writeFileSync(executable, '');
+    options.uiExecutablePath = executable;
+    daemon = createDaemon(options as DaemonOptions);
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(mockedSpawn).toHaveBeenCalledWith(
+      executable,
+      expect.arrayContaining([
+        '-StatePath', options.statePath,
+        '-RegistryPath', path.join(tmpDir, 'agents.json'),
+        '-CliPath', options.cliPath,
+        '-TrayStatePath', options.trayStatePath,
+        '-TrayPidPath', options.trayPidPath,
+      ]),
       expect.objectContaining({ stdio: ['ignore', 'ignore', 'pipe'] }),
     );
   });

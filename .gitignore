@@ -1,5 +1,7 @@
 node_modules/
 dist/
+src/center/csharp/**/bin/
+src/center/csharp/**/obj/
 .DS_Store
 *.log
 .env
@@ -11,3 +13,5 @@ dist/
 !.agent/state/*/
 !.agent/state/*/*.md
 !.agent/state/*/*.json
+src/center/csharp/dist/
+*.tgz

@@ -68,6 +68,12 @@ describe('win32.ts path resolution (P1-3 / P1-4 regression)', () => {
     expect(code).toMatch(/getDaemonCliPath/);
     expect(code).toMatch(/path\.join\(__dirname\s*,\s*['"]\.\.['"]\s*,\s*['"]daemon-cli\.js['"]\)/);
   });
+
+  it('Toast View honors the C# gray-scale switch and activation contract', () => {
+    expect(code).toContain("getUiMode() === 'csharp'");
+    expect(code).toContain('resolveNativeUiPath()');
+    expect(code).toContain("'-OpenCenter'");
+  });
 });
 
 describe('win32.ts Toast actions (P1-1 / P1-2 regression)', () => {

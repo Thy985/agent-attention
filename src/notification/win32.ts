@@ -2,6 +2,7 @@ import * as path from 'path';
 import * as os from 'os';
 import notifier from 'node-notifier';
 import { EventName, EVENT_PRIORITY } from '../events';
+import { getUiMode, resolveNativeUiPath } from '../ui-host';
 
 /** Title prefix shown on every Toast. */
 const APP_NAME = 'Agent Attention';
@@ -73,12 +74,24 @@ export async function notify(
           // Open Center window on toast click or "View" button
           try {
             const { spawn } = require('child_process');
-            spawn('powershell', [
-              '-NoProfile', '-ExecutionPolicy', 'Bypass',
-              '-File', centerPath,
-              '-StatePath', path.join(stateDir, 'state.json'),
-              '-RegistryPath', path.join(stateDir, 'agents.json'),
-            ], { windowsHide: true });
+            if (getUiMode() === 'csharp') {
+              const uiExecutable = resolveNativeUiPath();
+              if (!uiExecutable) throw new Error('AgentAttention.UI.exe not found');
+              spawn(uiExecutable, [
+                '-StatePath', path.join(stateDir, 'state.json'),
+                '-RegistryPath', path.join(stateDir, 'agents.json'),
+                '-CliPath', cliPath,
+                '-TrayStatePath', path.join(stateDir, 'tray-state.json'),
+                '-OpenCenter',
+              ], { windowsHide: true });
+            } else {
+              spawn('powershell', [
+                '-NoProfile', '-ExecutionPolicy', 'Bypass',
+                '-File', centerPath,
+                '-StatePath', path.join(stateDir, 'state.json'),
+                '-RegistryPath', path.join(stateDir, 'agents.json'),
+              ], { windowsHide: true });
+            }
           } catch (err) {
             try { console.warn(`[agent-notify] failed to open Center: ${err instanceof Error ? err.message : String(err)}`); } catch {}
           }
