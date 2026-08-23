@@ -17,6 +17,7 @@ public sealed class TrayController : IDisposable
     private readonly DispatcherTimer _refreshTimer=new();
     private readonly DateTime _startedAt=DateTime.UtcNow;
     private bool _suppressClick;
+    private bool _ipcActive;
     private bool _trayFileSeen;
     private string _lastSignature=string.Empty;
     private Icon? _icon;
@@ -51,6 +52,9 @@ public sealed class TrayController : IDisposable
         {
             _ipc=new IpcClient(stateDir, store);
             _ipc.OnStateUpdate+=OnIpcStateUpdate;
+            _ipc.OnReconnect+=OnIpcReconnect;
+            _ipc.OnDaemonStatus+=OnIpcDaemonStatus;
+            _ipcActive=true;
         }
     }
 
@@ -58,7 +62,9 @@ public sealed class TrayController : IDisposable
     {
         _ipc?.Start();
         Refresh();
-        _refreshTimer.Start();
+        // M6a: skip polling timer when IPC fast path is active.
+        // Tray updates are driven by OnIpcStateUpdate instead.
+        if(!_ipcActive)_refreshTimer.Start();
     }
 
     public void Stop()
@@ -82,6 +88,18 @@ public sealed class TrayController : IDisposable
         UpdateIcon(state);
         UpdateMenu(state);
         _notifyIcon.Visible=state.Visible||state.UnreadCount>0;
+    }
+
+    /// <summary>M6a: reconnected after disconnect — rebuild full snapshot from state.json.</summary>
+    private void OnIpcReconnect()
+    {
+        Refresh();
+    }
+
+    /// <summary>M6a: daemon sent stopping signal — exit gracefully.</summary>
+    private void OnIpcDaemonStatus(string status)
+    {
+        if(status=="stopping")RequestExit();
     }
 
     private void OnIpcStateUpdate(AttentionState state)

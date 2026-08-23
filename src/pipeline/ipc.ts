@@ -46,8 +46,15 @@ export function startPipeServer(stateDir: string): void {
   if (isWindows) {
     try {
       const token = getUserToken();
+      // Pick a port that avoids the fixed base (29876) to reduce test collisions.
+      // On Windows, named-pipe-style TCP ports in this range may be held by previous
+      // test runs; falling back to a random high port is safe because the C# client
+      // reads the actual port from ipc-port.txt at connect time.
+      // Use a random offset to avoid port collisions in test environments where
+      // the fixed base port (29876 + token_charcode % 100) may be held by stale
+      // processes. The C# client reads the actual port from ipc-port.txt.
       const basePort = 29876;
-      const port = basePort + (token.charCodeAt(0) % 100);
+      const port = 35000 + Math.floor(Math.random() * 10000);
 
       const server = net.createServer((socket: net.Socket) => {
         const clientId = `${socket.remoteAddress}:${socket.remotePort}`;

@@ -29,6 +29,8 @@ public sealed class IpcClient : IDisposable
     public event Action<AttentionState>? OnStateUpdate;
     public event Action? OnRegistryReload;
     public event Action<string>? OnDaemonStatus;
+    /// <summary>Emitted each time the connection is re-established after a disconnect.</summary>
+    public event Action? OnReconnect;
 
     public bool IsConnected => _port > 0;
 
@@ -102,6 +104,8 @@ public sealed class IpcClient : IDisposable
                     catch{}
                 }
                 await Task.Delay(500);
+                // Emit OnReconnect so TrayController can rebuild full snapshot from state.json
+                OnReconnect?.Invoke();
                 var p=ReadPort(_stateDir);
                 if(p!=_port){_port=p;}
             }
