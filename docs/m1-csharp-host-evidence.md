@@ -1,4 +1,4 @@
-# M1 C# UI Host Evidence Report
+# M2 L3 Evidence Report
 
 Date: 2026-08-23
 
@@ -80,7 +80,7 @@ node_modules/.bin/agent-attention.cmd
 node_modules/.bin/agent-notify.cmd
 ```
 
-## Gate Command
+## M2 L3 Gate Command
 
 ```powershell
 pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify-csharp-ui-m1.ps1
@@ -94,11 +94,28 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify-csharp-ui-m1.ps1 -A
 
 That mode reports **PASS WITH EXPLICIT EVIDENCE GAP**, not full M1 completion.
 
-## Required Before M1 Completion
+#
+## M2 L3 Verification Results (2026-08-23)
+
+| Area | Result | Reproducer / Evidence |
+|---|---|---|
+| TypeScript build | **PASS** | `npm run build` — clean |
+| Native publish | **PASS** | `npm run publish:ui` — 0 warnings |
+| Jest full suite | **PASS** | 13 suites, 105 tests |
+| C# interaction harness | **PASS** | 20 assertions |
+| Lifecycle matrix (real process) | **PASS** | `scripts/verify-csharp-lifecycle.ps1`; 13/13 |
+| Packaging/install smoke | **PASS** | `scripts/verify-csharp-package.ps1`; 14/14 |
+| Daemon/C# spawn args (mocked) | **PASS** | `tests/daemon-csharp.test.ts`; 6 tests |
+| Toast path resolution (source+compiled) | **PASS** | `tests/toast-integration.test.ts`; 7 tests |
+| Legacy PowerShell click parity | **NOT VERIFIED** | Cross-process legacy WPF automation unavailable |
+| Human tray UX | **NOT VERIFIED** | Requires interactive desktop observation |
+| Real terminal focus/jump | **NOT VERIFIED** | Harness proves invocation, not actual focus |
+| Toast OS activation | **NOT VERIFIED** | Requires interactive notification approval |# Required Before M1 Completion
 
 1. Run the legacy PowerShell Center and C# Center against the same fixtures on an interactive desktop.
 2. Complete the observable parity rows: unread states, event types, grouping, refresh, mark all read, close/hide, and jump invocation.
 3. Perform human Tray/Center UX review.
 4. Verify real terminal focus and Toast activation.
 5. Re-run the strict M1 gate without `-AllowPartialEvidence`.
+
 
