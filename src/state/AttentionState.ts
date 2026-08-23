@@ -54,17 +54,24 @@ export function readState(statePath: string): State {
     const parsed = JSON.parse(raw) as State;
     // Fix unreadCount: recompute from events (handles legacy data without 'read' field)
     const actualUnread = parsed.events.filter((e: StateEvent) => !e.read).length;
-    if (actualUnread !== parsed.unreadCount) {
+    const unreadChanged = actualUnread !== parsed.unreadCount;
+    if (unreadChanged) {
       parsed.unreadCount = actualUnread;
     }
     // Ensure visible is set based on events (backward-compat: old state files lack this field)
+    let visibleChanged = false;
     if (parsed.visible === undefined) {
       parsed.visible = parsed.events.length > 0;
+      visibleChanged = true;
     }
-    // Rewrite with corrected values to keep disk in sync
-    const tmpPath = `${statePath}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
-    fs.writeFileSync(tmpPath, JSON.stringify(parsed, null, 2), 'utf-8');
-    fs.renameSync(tmpPath, statePath);
+    // P1-7 fix: only rewrite the file when we actually changed a value.
+    // Every readState call previously rewrote, which (combined with chokidar
+    // watching the same path) caused an infinite change loop in the daemon.
+    if (unreadChanged || visibleChanged) {
+      const tmpPath = `${statePath}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
+      fs.writeFileSync(tmpPath, JSON.stringify(parsed, null, 2), 'utf-8');
+      fs.renameSync(tmpPath, statePath);
+    }
     return parsed;
   } catch {
     console.warn(`[agent-attention] state.json corrupted, using defaults`);
@@ -199,12 +206,17 @@ export function markAgentEventsRead(statePath: string, agentId: string): State {
   const events = current.events.map((e) =>
     e.agent_id === agentId ? { ...e, read: true } : e,
   );
+  const newUnreadCount = Math.max(0, current.unreadCount - unreadForAgent);
   const next: State = {
     ...current,
     updatedAt: Date.now(),
-    unreadCount: Math.max(0, current.unreadCount - unreadForAgent),
+    unreadCount: newUnreadCount,
     events,
-    visible: events.length > 0,
+    // P2-2 fix: visible must reflect whether ANY unread events remain,
+    // not whether ANY events exist at all. The old expression
+    // `events.length > 0` kept the tray icon visible even after marking
+    // everything read, so the icon would never auto-hide.
+    visible: newUnreadCount > 0,
   };
   atomicWrite(statePath, next);
   return next;

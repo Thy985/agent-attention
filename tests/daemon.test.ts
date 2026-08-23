@@ -88,6 +88,7 @@ describe('daemon (file-polling architecture)', () => {
     expect(fs.existsSync(options.trayStatePath!)).toBe(true);
     const content = fs.readFileSync(options.trayStatePath!, 'utf-8');
     expect(content).toMatch(/"message"\s*:\s*"a"/);
+    expect(fs.readdirSync(tmpDir).filter((name) => name.includes('.tmp'))).toEqual([]);
   });
 
   it('does not crash on corrupted state.json', async () => {

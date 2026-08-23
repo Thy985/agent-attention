@@ -1,5 +1,6 @@
 import * as chokidar from 'chokidar';
 import * as fs from 'fs';
+import * as crypto from 'crypto';
 import * as path from 'path';
 import * as os from 'os';
 import { spawn, ChildProcess } from 'child_process';
@@ -22,16 +23,37 @@ export interface Daemon {
 const TRAY_STATE_POLL_MS = 1000;
 const PID_CHECK_INTERVAL_MS = 5000;
 
-// Module-level logger — writable from both createDaemon() and process handlers
+/** Replace a file atomically; readers see either the old complete file or the new one. */
+function atomicWriteFileSync(filePath: string, contents: string): void {
+  const tmpPath = `${filePath}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
+  fs.writeFileSync(tmpPath, contents, 'utf-8');
+  try {
+    fs.renameSync(tmpPath, filePath);
+  } catch (err) {
+    try { fs.unlinkSync(tmpPath); } catch {}
+    throw err;
+  }
+}
+
+// Module-level logger — writable from both createDaemon() and process handlers.
+// Lazy-init: opening the stream at module load raced with parallel test
+// workers that delete ~/.agent-attention between mkdirSync and open.
+let _logFile: fs.WriteStream | null = null;
 const LOG_PATH = path.join(os.homedir(), '.agent-attention', 'daemon.log');
-try { fs.mkdirSync(path.dirname(LOG_PATH), { recursive: true }); } catch {}
-const _logFile = fs.createWriteStream(LOG_PATH, { flags: 'a' });
+function getLogFile(): fs.WriteStream {
+  if (!_logFile || _logFile.destroyed) {
+    try { fs.mkdirSync(path.dirname(LOG_PATH), { recursive: true }); } catch {}
+    _logFile = fs.createWriteStream(LOG_PATH, { flags: 'a' });
+    _logFile.on('error', () => { /* best-effort logging must never crash the daemon */ });
+  }
+  return _logFile;
+}
 export function daemonLog(msg: string, debug?: boolean): void {
   const ts = new Date().toISOString();
-  _logFile.write(`[${ts}] ${msg}\n`);
+  try { getLogFile().write(`[${ts}] ${msg}\n`); } catch {}
   if (debug) console.error(`[daemon] ${msg}`);
 }
-export function closeDaemonLog(): void { try { _logFile.end(); } catch {} }
+export function closeDaemonLog(): void { try { _logFile?.end(); } catch {} }
 
 /** Read tray PID from file. Returns null if missing or invalid. */
 function readTrayPid(trayPidPath: string): number | null {
@@ -72,6 +94,10 @@ export function createDaemon(options: DaemonOptions): Daemon {
 
   /** Write current state to the polling file that TrayIcon.ps1 reads. */
   const pushStateToTrayFile = (): void => {
+    // P3-7 fix: guard against a debounced push landing after stop() began.
+    // Without this, stop() deletes tray-state.json to signal the tray to
+    // exit, and a late push silently recreates it → tray never exits.
+    if (stopped) return;
     let state;
     try {
       state = readState(options.statePath);
@@ -83,7 +109,7 @@ export function createDaemon(options: DaemonOptions): Daemon {
     if (h === lastStateHash) return;          // no change — skip write
     lastStateHash = h;
     try {
-      fs.writeFileSync(options.trayStatePath, JSON.stringify(state, null, 2), 'utf-8');
+      atomicWriteFileSync(options.trayStatePath, JSON.stringify(state, null, 2));
       log('tray-state.json updated');
     } catch (err) {
       log(`write tray-state failed: ${err}`);
@@ -233,10 +259,73 @@ if (require.main === module) {
   const statePath    = path.join(stateDir, 'state.json');
   const trayStatePath = path.join(stateDir, 'tray-state.json');
   const trayPidPath   = path.join(stateDir, 'tray.pid');
+  const daemonLockPath = path.join(stateDir, 'daemon.lock');
   const trayScriptPath = path.join(__dirname, '..', 'src', 'center', 'TrayIcon.ps1');
-  const cliPath        = path.join(__dirname, '..', 'dist', 'daemon-cli.js');
+  // P1-5 fix: this module runs as dist/daemon.js, so daemon-cli.js is its
+  // sibling at dist/daemon-cli.js. (The old '..\\dist\\daemon-cli.js'
+  // resolved to dist/dist/daemon-cli.js, which never exists.)
+  const cliPath        = path.join(__dirname, 'daemon-cli.js');
 
   const debug = process.env.AGENT_ATTENTION_DEBUG === '1';
+
+  // -----------------------------------------------------------------------
+  // P1-8 fix: the DAEMON itself owns the single-instance lock (not the
+  // short-lived `daemon-cli start` process, which exits right after spawn).
+  // Acquisition is atomic (O_EXCL via 'wx'); a lock whose recorded pid is
+  // dead is treated as stale and stolen. This enforces daemon_instances=1
+  // even under concurrent `daemon start` invocations.
+  // -----------------------------------------------------------------------
+  const acquireDaemonLock = (): 'acquired' | 'stolen' | 'busy' => {
+    const writeLock = (): void => {
+      const fd = fs.openSync(daemonLockPath, 'wx');
+      fs.writeSync(fd, String(process.pid));
+      fs.closeSync(fd);
+    };
+    try {
+      writeLock();
+      return 'acquired';
+    } catch (err: any) {
+      if (!err || err.code !== 'EEXIST') throw err;
+      // Lock exists — check whether the holder is still alive.
+      try {
+        const raw = fs.readFileSync(daemonLockPath, 'utf-8').trim();
+        const pid = parseInt(raw, 10);
+        if (!isNaN(pid) && pid > 0) {
+          try { process.kill(pid, 0); return 'busy'; } catch { /* dead → steal */ }
+        }
+        // Stale or unreadable — steal atomically.
+        fs.unlinkSync(daemonLockPath);
+        writeLock();
+        return 'stolen';
+      } catch {
+        return 'busy';
+      }
+    }
+  };
+  const releaseDaemonLock = (): void => {
+    try {
+      if (fs.existsSync(daemonLockPath)) {
+        const raw = fs.readFileSync(daemonLockPath, 'utf-8').trim();
+        if (raw === String(process.pid)) fs.unlinkSync(daemonLockPath);
+      }
+    } catch {}
+  };
+
+  try { fs.mkdirSync(stateDir, { recursive: true }); } catch {}
+  let lockResult: 'acquired' | 'stolen' | 'busy' = 'busy';
+  try { lockResult = acquireDaemonLock(); } catch (err) {
+    daemonLog(`daemon lock acquisition failed: ${err}`, debug);
+    process.exit(1);
+  }
+  if (lockResult === 'busy') {
+    daemonLog('another daemon is already running — exiting', debug);
+    console.error('Daemon already running (lock held). Use: agent-attention daemon status');
+    process.exit(0);
+  }
+  if (lockResult === 'stolen') {
+    daemonLog('stale daemon.lock stolen from dead holder', debug);
+  }
+
   const daemon = createDaemon({
     statePath,
     powerShellPath: 'powershell',
@@ -247,8 +336,17 @@ if (require.main === module) {
     debug,
   });
 
-  process.on('SIGTERM', () => daemon.stop().then(() => process.exit(0)));
-  process.on('SIGINT',  () => daemon.stop().then(() => process.exit(0)));
+  const shutdown = (code: number): void => {
+    daemon.stop().then(() => {
+      releaseDaemonLock();
+      process.exit(code);
+    }).catch(() => {
+      releaseDaemonLock();
+      process.exit(code);
+    });
+  };
+  process.on('SIGTERM', () => shutdown(0));
+  process.on('SIGINT',  () => shutdown(0));
 
   // On crash, log the error and clean up files so next start can recover
   process.on('uncaughtException', (err) => {
@@ -258,11 +356,13 @@ if (require.main === module) {
       fs.unlinkSync(trayPidPath);
       fs.unlinkSync(trayStatePath);
     } catch {}
+    releaseDaemonLock();
     process.exit(1);
   });
   process.on('beforeExit', () => {
     try { fs.unlinkSync(trayPidPath); } catch {}
     try { fs.unlinkSync(trayStatePath); } catch {}
+    releaseDaemonLock();
     closeDaemonLog();
   });
 

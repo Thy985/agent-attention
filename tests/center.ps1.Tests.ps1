@@ -14,7 +14,10 @@ Describe 'CenterWindow utilities' {
     }
 
     Context 'Get-TimeAgo' {
-        # Re-implement here since dot-sourcing triggers WPF build
+        # Re-implement here since dot-sourcing triggers WPF build.
+        # Mirrors the FIXED version of Get-TimeAgo in CenterWindow.ps1
+        # (P1-13 fix: nested [math]::Floor inside double-quoted string was
+        #  not interpolated, producing literal "[d ago]").
         function Get-TimeAgo {
             param([long]$TimestampMs)
             $now = [DateTimeOffset]::Now.ToUnixTimeMilliseconds()
@@ -24,7 +27,8 @@ Describe 'CenterWindow utilities' {
             if ($minutes -lt 60) { return "${minutes}m ago" }
             $hours = [math]::Floor($minutes / 60)
             if ($hours -lt 24)   { return "${hours}h ago" }
-            return "${[math]::Floor($hours / 24)}d ago"
+            $days = [math]::Floor($hours / 24)
+            return "${days}d ago"
         }
 
         It 'returns seconds for recent timestamps' {
@@ -49,6 +53,27 @@ Describe 'CenterWindow utilities' {
             $now  = [DateTimeOffset]::Now.ToUnixTimeMilliseconds()
             $result = Get-TimeAgo ($now - 86400000 * 3)
             $result | Should -Match '^\d+d ago$'
+        }
+
+        # P1-13 regression: 24h+ boundary must include the day count.
+        # Previously produced literal "[d ago]" because PowerShell does not
+        # interpolate nested method calls inside double-quoted strings.
+        It 'returns "1d ago" for 24h-old timestamps (regression for F4/P1-13)' {
+            $now = [DateTimeOffset]::Now.ToUnixTimeMilliseconds()
+            $result = Get-TimeAgo ($now - 86400000)
+            $result | Should -Be '1d ago'
+        }
+
+        It 'returns "2d ago" for 48h-old timestamps' {
+            $now = [DateTimeOffset]::Now.ToUnixTimeMilliseconds()
+            $result = Get-TimeAgo ($now - (86400000 * 2))
+            $result | Should -Be '2d ago'
+        }
+
+        It 'returns "7d ago" for 7-day-old timestamps' {
+            $now = [DateTimeOffset]::Now.ToUnixTimeMilliseconds()
+            $result = Get-TimeAgo ($now - (86400000 * 7))
+            $result | Should -Be '7d ago'
         }
     }
 

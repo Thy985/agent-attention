@@ -21,13 +21,24 @@ export interface AgentRegistry {
   version: number;
 }
 
-const REGISTRY_PATH = path.join(os.homedir(), '.agent-attention', 'agents.json');
 const REGISTRY_VERSION = 2;
+
+/**
+ * Resolve registry path. AGENT_ATTENTION_HOME overrides the base directory
+ * (same convention as src/dedup/index.ts) so tests can isolate from the real
+ * user dir instead of writing/deleting ~/.agent-attention.
+ */
+function getRegistryPath(): string {
+  return path.join(
+    process.env.AGENT_ATTENTION_HOME || path.join(os.homedir(), '.agent-attention'),
+    'agents.json',
+  );
+}
 
 function readRegistry(): AgentRegistry {
   try {
-    if (fs.existsSync(REGISTRY_PATH)) {
-      const raw = fs.readFileSync(REGISTRY_PATH, 'utf-8');
+    if (fs.existsSync(getRegistryPath())) {
+      const raw = fs.readFileSync(getRegistryPath(), 'utf-8');
       return JSON.parse(raw) as AgentRegistry;
     }
   } catch {
@@ -37,8 +48,8 @@ function readRegistry(): AgentRegistry {
 }
 
 function writeRegistry(registry: AgentRegistry): void {
-  fs.mkdirSync(path.dirname(REGISTRY_PATH), { recursive: true });
-  fs.writeFileSync(REGISTRY_PATH, JSON.stringify(registry, null, 2), 'utf-8');
+  fs.mkdirSync(path.dirname(getRegistryPath()), { recursive: true });
+  fs.writeFileSync(getRegistryPath(), JSON.stringify(registry, null, 2), 'utf-8');
 }
 
 /**

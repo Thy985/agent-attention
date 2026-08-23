@@ -1,4 +1,4 @@
-# Agent Attention Center — Tray Icon (PowerShell + WinForms)
+﻿# Agent Attention Center — Tray Icon (PowerShell + WinForms)
 #
 # Architecture: daemon writes tray-state.json → TrayIcon polls + pumps messages.
 #
@@ -15,6 +15,21 @@ param(
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+
+# ---------------------------------------------------------------------------
+# P0-2: Prevent a thrown exception inside a UI event handler from opening a
+# hidden modal ThreadExceptionDialog (which would freeze the tray and make the
+# daemon think the process is still alive → never respawns → ghost icon).
+# Route UI-thread exceptions to our handler and log instead of showing a dialog.
+# ---------------------------------------------------------------------------
+[System.Windows.Forms.Application]::SetUnhandledExceptionMode(
+    [System.Windows.Forms.UnhandledExceptionMode]::CatchException)
+[System.Windows.Forms.Application]::add_ThreadException({
+    param($sender, $e)
+    try {
+        Write-Warning ("[TrayIcon] Unhandled UI exception (swallowed): " + $e.Exception.Message)
+    } catch {}
+})
 
 # ---------------------------------------------------------------------------
 # Single-instance mutex (issue #2)
@@ -130,15 +145,16 @@ function Build-ContextMenu {
     $openItem.Add_Click({
         param($s, $e)
         $centerPath = Join-Path $PSScriptRoot 'CenterWindow.ps1'
-        $args = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$centerPath`"")
+        # NOTE: '$args' is the automatic variable - use '$launchArgs' (see click handler)
+        $launchArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$centerPath`"")
         # Forward paths so Center reads the same data as tray
-        if ($using:StatePath)  { $args += '-StatePath',  $using:StatePath }
-        if ($using:CliPath) {
-            $stateDir = Split-Path $using:StatePath -Parent
-            $args += '-RegistryPath', (Join-Path $stateDir 'agents.json')
+        if ($script:StatePath)  { $launchArgs += '-StatePath',  $script:StatePath }
+        if ($script:cliPath) {
+            $stateDir = Split-Path $script:StatePath -Parent
+            $launchArgs += '-RegistryPath', (Join-Path $stateDir 'agents.json')
         }
-        Start-Process powershell -ArgumentList $args -WindowStyle Hidden
-    }.GetNewClosure())
+        Start-Process powershell -ArgumentList ([string[]]$launchArgs) -WindowStyle Hidden
+    })
     $menu.Items.Add($openItem) | Out-Null
     $menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 
@@ -164,14 +180,14 @@ function Build-ContextMenu {
                 $agentNm  = if ($ev.agent_name) { $ev.agent_name } elseif ($ev.agent_id) { $ev.agent_id } else { "agent" }
                 $readSt   = if ($ev.read) { "Yes" } else { "No" }
                 # Mark as read via CLI (issue #12)
-                Mark-EventRead $ev.id $using:CliPath
+                Mark-EventRead $ev.id $script:cliPath
                 $details  = "Agent: $agentNm`nType: $($ev.type)`nMessage: $($ev.message)`nPriority: $($ev.priority)`nRead: $readSt"
                 [System.Windows.Forms.MessageBox]::Show(
                     $details, "Agent Attention",
                     [System.Windows.Forms.MessageBoxButtons]::OK,
                     [System.Windows.Forms.MessageBoxIcon]::Information
                 )
-            }.GetNewClosure())
+            })
             $menu.Items.Add($item) | Out-Null
         }
     }
@@ -186,7 +202,7 @@ function Build-ContextMenu {
         $script:notifyIcon.Visible = $false
         $script:stopSignal = $true
         [System.Windows.Forms.Application]::Exit()
-    }.GetNewClosure())
+    })
     $menu.Items.Add($exitItem) | Out-Null
 
     # Rebuild menu when it closes (issue #11)
@@ -204,7 +220,7 @@ function Build-ContextMenu {
                     $fresh = $stateJson | ConvertFrom-Json
                     $script:currentState = $fresh
                     Update-NotifyIcon $fresh
-                    $script:notifyIcon.ContextMenuStrip = Build-ContextMenu $fresh $using:CliPath
+                    $script:notifyIcon.ContextMenuStrip = Build-ContextMenu $fresh $script:cliPath
                 } catch {}
             }
         }
@@ -232,8 +248,12 @@ function Start-Tray {
             if (Test-Path $candidate) { $cliPath = $candidate }
         }
     }
-    $script:cliPath        = $CliPath
+    $script:cliPath        = $cliPath
+    $script:StatePath      = $StatePath
     $script:trayStatePath  = if ($TrayStatePath) { $TrayStatePath } else { "$env:TEMP\agent-attention-tray-state.json" }
+    # Expose node exe to event handlers via $script: scope (dynamic scoping
+    # from delegate context is unreliable for function locals)
+    $script:cliExe         = if ($env:AGENT_ATTENTION_NODE) { $env:AGENT_ATTENTION_NODE } else { "node" }
 
     # Create owned initial icon (never use SystemIcons — issue #13)
     $initBmp  = Build-IconBitmap 0 (Get-IconColor 0)
@@ -250,43 +270,66 @@ function Start-Tray {
     # Left-click — open Center (single click only; double-click is handled separately)
     $script:notifyIcon.Add_Click({
         param($s, $e)
-        $now = [DateTime]::Now.Ticks
-        # Suppress if we're inside a double-click sequence (the DoubleClick handler fires first)
-        if ($script:suppressClick) {
-            $script:suppressClick = $false
-            return
+        try {
+            $trayLog = Join-Path $env:TEMP 'aa-tray-click.log'
+            [System.IO.File]::AppendAllText($trayLog, "[$([DateTime]::Now.ToString('HH:mm:ss'))] CLICK fired (suppress=$script:suppressClick)`r`n")
+        } catch {}
+        try {
+            $now = [DateTime]::Now.Ticks
+            # Suppress if we're inside a double-click sequence (the DoubleClick handler fires first)
+            if ($script:suppressClick) {
+                $script:suppressClick = $false
+                return
+            }
+            # If within 250ms of the previous click, this is the SECOND click of a double-click
+            # → don't open Center, let the DoubleClick handler do its job
+            if ($now - $script:clickTimestamp -lt 2500000) {
+                return
+            }
+            $centerPath = Join-Path $PSScriptRoot 'CenterWindow.ps1'
+            # NOTE 1: do NOT name this '$args' - that is the automatic variable
+            #   holding the event delegate arguments.
+            # NOTE 2: trailing commas at end of line, never a LEADING comma on
+            #   a continuation line - inside @() a line-leading comma is the
+            #   UNARY comma operator and nests the rest into an Object[]
+            #   element, which Start-Process -ArgumentList cannot bind
+            #   ("cannot convert System.Object[] to System.String").
+            $launchArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$centerPath`"",
+                      '-StatePath', $script:StatePath)
+            if ($script:cliPath) {
+                $stateDir = Split-Path $script:StatePath -Parent
+                $launchArgs += '-RegistryPath', (Join-Path $stateDir 'agents.json')
+            }
+            Start-Process powershell -ArgumentList ([string[]]$launchArgs) -WindowStyle Hidden
+            $script:clickTimestamp = $now
+        } catch {
+            try { [System.IO.File]::AppendAllText((Join-Path $env:TEMP 'aa-tray-click.log'), "[$([DateTime]::Now.ToString('HH:mm:ss'))] CLICK-ERR: $_`r`n") } catch {}
         }
-        # If within 250ms of the previous click, this is the SECOND click of a double-click
-        # → don't open Center, let the DoubleClick handler do its job
-        if ($now - $script:clickTimestamp -lt 2500000) {
-            return
-        }
-        $centerPath = Join-Path $PSScriptRoot 'CenterWindow.ps1'
-        $args = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$centerPath`""
-                  , '-StatePath', $script:StatePath)
-        if ($script:cliPath) {
-            $stateDir = Split-Path $script:StatePath -Parent
-            $args += '-RegistryPath', (Join-Path $stateDir 'agents.json')
-        }
-        Start-Process powershell -ArgumentList $args -WindowStyle Hidden
-        $script:clickTimestamp = $now
-    }.GetNewClosure()) | Out-Null
+    }) | Out-Null
 
     # Double-click — mark all read (no Center window opened)
     $script:notifyIcon.Add_DoubleClick({
         param($s, $e)
-        $script:suppressClick = $true   # cancel any pending second-click action
-        if ($script:cliPath -and (Test-Path $script:cliPath)) {
-            try {
-                Start-Process $cliExe -ArgumentList $script:cliPath, 'mark-all-read' `
-                    -WindowStyle Hidden -ErrorAction SilentlyContinue | Out-Null
-            } catch {}
+        try {
+            $trayLog = Join-Path $env:TEMP 'aa-tray-click.log'
+            [System.IO.File]::AppendAllText($trayLog, "[$([DateTime]::Now.ToString('HH:mm:ss'))] DBLCLK fired`r`n")
+        } catch {}
+        try {
+            $script:suppressClick = $true   # cancel any pending second-click action
+            if ($script:cliPath -and (Test-Path $script:cliPath)) {
+                try {
+                    Start-Process $script:cliExe -ArgumentList ([string[]]@($script:cliPath, 'mark-all-read')) `
+                        -WindowStyle Hidden -ErrorAction SilentlyContinue | Out-Null
+                } catch {} 
+            }
+            # Also local mark for immediate feedback
+            $script:currentState.unreadCount = 0
+            $script:currentState.events = @($script:currentState.events | ForEach-Object { $_.read = $true; $_ })
+            Update-NotifyIcon $script:currentState
+        } catch {
+            try { [System.IO.File]::AppendAllText((Join-Path $env:TEMP 'aa-tray-click.log'), "[$([DateTime]::Now.ToString('HH:mm:ss'))] DBLCLK-ERR: $_`r`n") } catch {}
         }
-        # Also local mark for immediate feedback
-        $script:currentState.unreadCount = 0
-        $script:currentState.events = @($script:currentState.events | ForEach-Object { $_.read = $true; $_ })
-        Update-NotifyIcon $script:currentState
-    }.GetNewClosure()) | Out-Null
+    }) | Out-Null
 
     # Initial context menu
     $script:notifyIcon.ContextMenuStrip = Build-ContextMenu @{ unreadCount=0; events=@() } $script:cliPath
@@ -332,7 +375,7 @@ $ctrlHandler = {
     param($s, $e)
     Write-Host "[TrayIcon] Ctrl+C received — exiting" -ForegroundColor Yellow
     $script:stopSignal = $true
-}.GetNewClosure()
+}
 [Console]::Add_CancelKeyPress($ctrlHandler) | Out-Null
 
 # Build a helper that checks all three exit conditions
@@ -374,8 +417,14 @@ if (-not (Test-Path $script:trayStatePath)) {
 Write-Host "[TrayIcon] polling $script:trayStatePath" -ForegroundColor Green
 
 while (-not (Test-TrayShouldExit)) {
-    # Pump Windows messages so Click/DoubleClick/ContextMenu callbacks fire
-    [System.Windows.Forms.Application]::DoEvents()
+    # Pump Windows messages so Click/DoubleClick/ContextMenu callbacks fire.
+    # P0-2: wrap in try/catch — an exception here (e.g. from a stale event handler)
+    # would otherwise propagate up and freeze the polling loop indefinitely.
+    try {
+        [System.Windows.Forms.Application]::DoEvents()
+    } catch {
+        try { Write-Warning ("[TrayIcon] DoEvents swallowed exception: " + $_.Exception.Message) } catch {}
+    }
 
     # Read state from file written by daemon
     try {

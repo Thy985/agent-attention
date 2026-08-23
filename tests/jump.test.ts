@@ -47,4 +47,15 @@ describe('jumpToTarget', () => {
     expect(src).toContain("spawnSync('powershell'");
     expect(src).not.toContain('spawnSync(process.execPath');
   });
+
+  // P1-14 regression: jumpToTarget was dead code (defined but never called).
+  // The CLI now exposes `agent-attention jump <agent-id>` which dispatches
+  // through jumpToTarget when the agent has a registered terminal target.
+  it('is invoked from daemon-cli.ts (no longer dead code)', () => {
+    const fs = require('fs');
+    const src = fs.readFileSync('src/daemon-cli.ts', 'utf8');
+    // CLI must require ./jump and call jumpToTarget
+    expect(src).toMatch(/require\(['"]\.\/jump['"]\)/);
+    expect(src).toMatch(/jumpToTarget\(/);
+  });
 });

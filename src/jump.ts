@@ -29,11 +29,16 @@ export function jumpToTarget(target: AgentTarget | null): void {
               public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
             }
 "@
-            [Win32]::ShowWindow($hwnd, 3)
-            [Win32]::SetForegroundWindow($hwnd)
-          }
+          [Win32]::ShowWindow($hwnd, 3)
+          # Focus-stealing protection: Windows blocks SetForegroundWindow from
+          # a non-foreground process. Tapping ALT makes the OS treat the next
+          # SetForegroundWindow as user-initiated (standard workaround).
+          Add-Type -AssemblyName System.Windows.Forms
+          [System.Windows.Forms.SendKeys]::SendWait('%')
+          [Win32]::SetForegroundWindow($hwnd)
         }
-      `;
+      }
+    `;
 
     // Use spawnSync with explicit 'powershell' — process.execPath is Node, not PS.
     spawnSync('powershell', [

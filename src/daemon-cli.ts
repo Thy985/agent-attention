@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -189,11 +190,14 @@ function killExistingDaemon(): void {
   // Also kill their tray children
   for (const pid of pids) {
     try {
+      // P2-1 fix: the old script had a space between the pipeline variable
+      // and its .name property, which is a PowerShell parser error.
+      // Use the correct $var.property form throughout.
       runPs(
         `get-ciminstance win32_process | where-object { ` +
-        `$_ .name -eq 'powershell.exe' -and $_ .parentprocessid -eq ${pid} ` +
-        `-and $_ .commandline -like '*TrayIcon.ps1*' } | ` +
-        'foreach-object { stop-process -id $_ .processid -force }',
+        `$_.name -eq 'powershell.exe' -and $_.parentprocessid -eq ${pid} ` +
+        `-and $_.commandline -like '*TrayIcon.ps1*' } | ` +
+        `foreach-object { stop-process -id $_.processid -force }`,
       );
     } catch {}
   }
@@ -230,8 +234,18 @@ function startDaemon(): void {
     return;
   }
 
-  // Clean up stale lock/pid files
-  try { fs.unlinkSync(LOCK_FILE); } catch { /* ignore */ }
+  // P1-8 (revised): single-instance enforcement lives in the DAEMON itself
+  // (daemon.ts acquires daemon.lock with atomic O_EXCL + stale-steal).
+  // The starter CLI must NOT hold the lock — it exits right after spawn,
+  // and a lock held by an exited process would block every future start.
+  // Here we only remove a stale lock whose holder is already dead.
+  try {
+    const raw = fs.existsSync(LOCK_FILE) ? fs.readFileSync(LOCK_FILE, 'utf-8').trim() : '';
+    const lockPid = parseInt(raw, 10);
+    if (!raw || isNaN(lockPid) || lockPid <= 0 || !isProcessRunning(lockPid)) {
+      try { fs.unlinkSync(LOCK_FILE); } catch { /* ignore */ }
+    }
+  } catch { /* ignore */ }
   clearPid();
 
   // Use __dirname (not process.cwd()) so paths resolve correctly regardless
@@ -312,7 +326,17 @@ function stopDaemon(graceful: boolean = true): void {
   // Always clean up stale tray processes
   killOrphanTrayProcesses();
   clearPid();
+  // Cleanup semantics: `stop` unconditionally removes the lifecycle files.
+  // The lock may belong to the (now dead) daemon — removing it is correct.
   try { fs.unlinkSync(LOCK_FILE); } catch { /* ignore */ }
+  // Also remove tray lifecycle files. On Windows the daemon is hard-killed
+  // by SIGTERM (TerminateProcess), so its own stop() cleanup never runs and
+  // these files would otherwise linger until the next start.
+  try { fs.unlinkSync(TRAY_PID_FILE); } catch { /* ignore */ }
+  try {
+    const trayStateFile = path.join(STATE_DIR, 'tray-state.json');
+    if (fs.existsSync(trayStateFile)) fs.unlinkSync(trayStateFile);
+  } catch { /* ignore */ }
 }
 
 function status(): void {
@@ -363,11 +387,23 @@ function doctor(): void {
   console.log('');
 
   // Count running daemon and tray instances (issue #14: get-ciminstance, PS5.1-safe)
-  // Daemon: check PID file + liveness (avoids self-match from doctor process)
+  // P2-3 fix: previously `daemonInstances` was hard-coded to ≤1, so doctor
+  // could never detect multiple daemons. Now we enumerate actual daemon
+  // processes (excluding this doctor process) so the count reflects reality.
   let daemonInstances = 0;
   let trayInstances = 0;
+  // Start from PID file (fast path); add any extra daemons found by process scan
   const pid = readPid();
   if (pid && isProcessRunning(pid)) daemonInstances = 1;
+  const liveDaemonPids = getDaemonPids();
+  // liveDaemonPids already excludes self (process.pid).
+  // PID file pid might not be in liveDaemonPids if it died but file wasn't cleaned.
+  if (liveDaemonPids.length > 0) {
+    // Take max to avoid double-counting the PID-file-tracked one.
+    const uniquePids = new Set<number>(liveDaemonPids);
+    if (pid && isProcessRunning(pid)) uniquePids.add(pid);
+    daemonInstances = uniquePids.size;
+  }
 
   // Try PID file first (exact match, no CIM needed)
   const trayPid = readTrayPid();
@@ -507,6 +543,24 @@ function clearAgentTarget(agentId: string): void {
   console.log(`Cleared target for "${agentId}"`);
 }
 
+function jumpToAgent(agentId: string): void {
+  const agent = getAgent(agentId);
+  if (agent === undefined) {
+    console.error(`Agent "${agentId}" not found. Register first: agent-attention agent register <id> <name>`);
+    process.exit(1);
+  }
+  if (!agent.target) {
+    console.error(`Agent "${agentId}" has no target. Set one with: agent-attention agent target set <id> --pid <pid>`);
+    process.exit(1);
+  }
+  // P1-14 fix: previously jumpToTarget was exported but never called.
+  // Now the CLI exposes `agent-attention jump <agent_id>` so users (and
+  // automation) can trigger focus via the registered target.
+  const { jumpToTarget } = require('./jump');
+  jumpToTarget(agent.target);
+  console.log(`Jumped to agent "${agentId}" → terminal PID ${agent.target.pid}`);
+}
+
 // CLI entry point
 function main(): void {
   const args = process.argv.slice(2);
@@ -523,6 +577,7 @@ function main(): void {
     console.log('  daemon status    Show daemon status');
     console.log('  mark-all-read    Mark all events as read');
     console.log('  mark-event <id>  Mark a single event as read');
+    console.log('  jump <agent-id>  Focus the terminal target of an agent');
     console.log('  agent register <id> <name>  Register an agent');
     console.log('  agent list                           List all agents');
     console.log('  agent target set <id> --pid <n>      Set target terminal pid');
@@ -556,6 +611,13 @@ function main(): void {
     markEvent(eventId);
   } else if (command === 'doctor') {
     doctor();
+  } else if (command === 'jump') {
+    const agentId = args[1];
+    if (!agentId) {
+      console.log('Usage: agent-attention jump <agent-id>');
+      process.exit(1);
+    }
+    jumpToAgent(agentId);
   } else if (command === 'agent') {
     const sub1 = args[1];
     const sub2 = args[2];

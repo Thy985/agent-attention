@@ -1,0 +1,5 @@
+# mise toolchain config for agent-attention
+# Entered-directory auto-activation: `dotnet` resolves to 10.0.400 (LTS) here.
+# Node/TS core is unchanged — managed by the existing WorkBuddy node runtime, not pinned here.
+[tools]
+dotnet = "10.0.400"

@@ -38,6 +38,32 @@ describe('AttentionState', () => {
         visible: false,
       });
     });
+
+    // P1-7 regression: readState must NOT rewrite the file when nothing
+    // changed — otherwise chokidar in daemon sees a 'change' event after
+    // every readState call → infinite write loop.
+    it('does not rewrite state.json when file is already consistent', () => {
+      recordEvent(statePath, {
+        type: 'completed',
+        message: 'first',
+        timestamp: 1,
+        priority: 'P2',
+        agent_id: 'a',
+        agent_name: 'A',
+        title: 'A: completed',
+      });
+      // State file is consistent now. Capture its mtime.
+      const mtimeBefore = fs.statSync(statePath).mtimeMs;
+
+      // Read again — must be a no-op write.
+      // Wait > 2ms so filesystem mtime resolution can detect a write.
+      const wait = (ms: number) => new Promise(r => setTimeout(r, ms));
+      return wait(5).then(() => {
+        readState(statePath);
+        const mtimeAfter = fs.statSync(statePath).mtimeMs;
+        expect(mtimeAfter).toBe(mtimeBefore);
+      });
+    });
   });
 
   describe('recordEvent', () => {
@@ -545,6 +571,31 @@ describe('AttentionState', () => {
       const result = markAgentEventsRead(statePath, 'nonexistent');
       expect(result.unreadCount).toBe(0);
       expect(result.events).toEqual([]);
+    });
+
+    // P2-2 regression: markAgentEventsRead must set `visible: false` when
+    // ALL unread events are consumed — not when the events array still
+    // has elements (events are kept on disk; only unread controls visibility).
+    it('hides tray icon (visible=false) when all unread events become read', () => {
+      recordEvent(statePath, {
+        type: 'completed',
+        message: 'x',
+        timestamp: 1,
+        priority: 'P2',
+        agent_id: 'claude',
+        agent_name: 'Claude',
+        title: 'Claude: completed',
+      });
+      let s = readState(statePath);
+      expect(s.unreadCount).toBe(1);
+      expect(s.visible).toBe(true);
+
+      const result = markAgentEventsRead(statePath, 'claude');
+      expect(result.unreadCount).toBe(0);
+      expect(result.visible).toBe(false); // ← was `events.length > 0` → always true
+
+      s = readState(statePath);
+      expect(s.visible).toBe(false);
     });
   });
 });

@@ -1,4 +1,4 @@
-# Agent Attention Center — Center Window (WPF)
+﻿# Agent Attention Center — Center Window (WPF)
 #
 # Usage:
 #   powershell -WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -File CenterWindow.ps1
@@ -20,6 +20,10 @@ $mutex     = New-Object System.Threading.Mutex($false, $mutexName)
 $acquired  = $false
 try {
     $acquired = $mutex.WaitOne(0, $true)
+} catch [System.Threading.AbandonedMutexException] {
+    # A previous Center was force-killed while holding the mutex.
+    # AbandonedMutexException means ownership WAS transferred to us - proceed.
+    $acquired = $true
 } catch {}
 if (-not $acquired) {
     Write-Warning "Another Center window is already open."
@@ -71,7 +75,12 @@ function Get-TimeAgo {
     if ($minutes -lt 60) { return "${minutes}m ago" }
     $hours   = [math]::Floor($minutes / 60)
     if ($hours -lt 24)   { return "${hours}h ago" }
-    return "${[math]::Floor($hours / 24)}d ago"
+    # P1-13 fix: nested method calls inside a double-quoted string are not
+    # interpolated by PowerShell. The old expression
+    #     "${[math]::Floor($hours / 24)}d ago"
+    # expanded to literal "[d ago]" (number lost). Compute into a local first.
+    $days = [math]::Floor($hours / 24)
+    return "${days}d ago"
 }
 
 function Get-ConnectionStatus {
@@ -446,15 +455,47 @@ while ($script:_centerRefreshing -and $window -and -not $window.IsDisposed) {
 
                     # Agent header
                     $ahp = New-Object System.Windows.Controls.StackPanel
+                    $ahp.Orientation = 'Horizontal'
                     $ahp.Margin = '0,8,0,4'
 
                     $at = New-Object System.Windows.Controls.TextBlock
                     $at.Text         = "$aname  ($unrd unread)"
                     $at.FontSize     = 14
                     $at.FontWeight   = 'SemiBold'
+                    $at.VerticalAlignment = 'Center'
                     $at.Foreground   = (New-Object System.Windows.Media.SolidColorBrush(
                         [System.Windows.Media.ColorConverter]::ConvertFromString('#E0E0E0')))
                     $ahp.Children.Add($at) | Out-Null
+
+                    # v0.3 "click → jump back to agent" production path:
+                    # per-agent ⇱ button (only when a target is registered).
+                    # Snapshot-captures $jumpAgentId/$jumpCli via GetNewClosure —
+                    # safe here because the handler only reads captured values
+                    # and spawns the CLI; it does not write back to $script: state.
+                    if ($ainfo.target -and $ainfo.target.pid) {
+                        $jk = New-Object System.Windows.Controls.TextBlock
+                        $jk.Text       = '  ⇱ Focus'
+                        $jk.FontSize   = 12
+                        $jk.FontWeight = 'Bold'
+                        $jk.Cursor     = [System.Windows.Input.Cursors]::Hand
+                        $jk.ToolTip    = "Focus target terminal (pid $($ainfo.target.pid))"
+                        $jk.Foreground = (New-Object System.Windows.Media.SolidColorBrush(
+                            [System.Windows.Media.ColorConverter]::ConvertFromString('#5599FF')))
+                        $jk.Margin     = '8,2,0,2'
+                        $jk.VerticalAlignment = 'Center'
+                        $jumpAgentId = $agentId
+                        $jumpCli = $script:_centerCliPath
+                        $jk.Add_MouseDown({
+                            param($s, $e)
+                            $e.Handled = $true
+                            $np = $env:AGENT_ATTENTION_NODE
+                            if (-not $np) { $np = 'node' }
+                            if ($jumpCli) {
+                                try { Start-Process $np -ArgumentList $jumpCli, 'jump', $jumpAgentId -WindowStyle Hidden -ErrorAction SilentlyContinue } catch {}
+                            }
+                        }.GetNewClosure()) | Out-Null
+                        $ahp.Children.Add($jk) | Out-Null
+                    }
 
                     $ct = New-Object System.Windows.Controls.TextBlock
                     $ct.Text         = $cs.label
@@ -531,10 +572,16 @@ while ($script:_centerRefreshing -and $window -and -not $window.IsDisposed) {
                             $rb.Add_MouseDown({
                                 param($s, $e)
                                 $e.Handled = $true
+                                $nodePath = $env:AGENT_ATTENTION_NODE
+                                if (-not $nodePath) { $nodePath = 'node' }
                                 if ($evCliPath) {
-                                    try { Start-Process $env:AGENT_ATTENTION_NODE -ArgumentList "$evCliPath", 'mark-event', $evId -WindowStyle Hidden -ErrorAction SilentlyContinue } catch {}
+                                    try { Start-Process $nodePath -ArgumentList $evCliPath, 'mark-event', $evId -WindowStyle Hidden -ErrorAction SilentlyContinue } catch {}
                                 }
-                                $s.Parent.RemoveChild($s)
+                                # P1-9 fix: WPF UIElement has no RemoveChild.
+                                # StackPanel.Children is a UIElementCollection; use .Remove($child).
+                                if ($s -and $s.Parent) {
+                                    try { $s.Parent.Children.Remove($s) } catch {}
+                                }
                             }.GetNewClosure()) | Out-Null
                             $ep.Children.Add($rb) | Out-Null
                         }

@@ -13,35 +13,21 @@ import {
 import { recordEvent, readState } from '../src/state/AttentionState';
 
 describe('Registry v2 with Target', () => {
-  let registryPath: string;
-  let stateDir: string;
-  let statePath: string;
+  let tmpHome: string;
 
   beforeEach(() => {
-    // Override the registry path to use a temp directory
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-attention-reg-'));
-    registryPath = path.join(tmpDir, 'agents.json');
-
-    // We can't override the module-level constant directly, so we use
-    // a jest.mock-style approach: replace fs.existsSync / readFileSync / writeFileSync
-    // by mocking the file module.
-    // Instead, we create a real registry at the default path but clean up after.
-    // For simplicity in tests, we'll patch `path.join` / `os.homedir` by using the
-    // direct fs ops with a controlled path via require.cache invalidation trick...
-    // Actually the simplest approach: write directly to the real path.
-    // Use jest.spy on the internal functions isn't possible (not exported).
-    // So let's just point at the temp path by temporarily overriding the module.
+    // Isolate the registry from the REAL user dir (~/.agent-attention) via
+    // AGENT_ATTENTION_HOME — same convention as src/dedup/index.ts. This
+    // prevents tests from touching/deleting real daemon state and avoids
+    // tripping the sandbox bulk-delete guard on recursive rm of user dirs.
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-attention-home-'));
+    process.env.AGENT_ATTENTION_HOME = tmpHome;
   });
 
   afterEach(() => {
-    // Clean up any temp registry file if it was created at the real path
-    const realPath = path.join(os.homedir(), '.agent-attention', 'agents.json');
-    if (fs.existsSync(realPath)) {
-      fs.unlinkSync(realPath);
-    }
-    const realStateDir = path.join(os.homedir(), '.agent-attention');
-    if (fs.existsSync(realStateDir)) {
-      fs.rmSync(realStateDir, { recursive: true, force: true });
+    delete process.env.AGENT_ATTENTION_HOME;
+    if (tmpHome && fs.existsSync(tmpHome)) {
+      fs.rmSync(tmpHome, { recursive: true, force: true });
     }
   });
 
@@ -50,25 +36,11 @@ describe('Registry v2 with Target', () => {
    * We achieve this by temporarily monkey-patching path.join so that calls
    * returning `.agent-attention/agents.json` are rerouted to our temp dir.
    */
+  // With AGENT_ATTENTION_HOME set in beforeEach, every registry write lands
+  // in the per-test temp home. This wrapper now only runs the callback —
+  // cleanup is handled by afterEach (temp home removal).
   function withTempRegistry(fn: () => void): void {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-attention-reg-'));
-    const realPath = path.join(os.homedir(), '.agent-attention', 'agents.json');
-    try {
-      // Use jest.requireActual to get a handle on the registry module's internals
-      // Since REGISTRY_PATH is const, we can't change it at runtime.
-      // Instead, write our test data to the real path directly.
-      fs.mkdirSync(path.dirname(realPath), { recursive: true });
-      fn();
-    } finally {
-      if (fs.existsSync(realPath)) {
-        fs.unlinkSync(realPath);
-      }
-      // Clean up .agent-attention only if it was created for this test
-      const stateDir = path.join(os.homedir(), '.agent-attention');
-      if (fs.existsSync(stateDir)) {
-        fs.rmSync(stateDir, { recursive: true, force: true });
-      }
-    }
+    fn();
   }
 
   describe('AgentTarget interface and Agent schema', () => {
@@ -94,7 +66,7 @@ describe('Registry v2 with Target', () => {
   describe('v1 → v2 backward compatibility', () => {
     it('v1 registry (no target field) loads and migrates to v2 on write', () => {
       withTempRegistry(() => {
-        const realPath = path.join(os.homedir(), '.agent-attention', 'agents.json');
+        const realPath = path.join(tmpHome, 'agents.json');
         // Simulate a v1 registry file (no target field, version 1)
         const v1Data = {
           version: 1,
@@ -130,7 +102,7 @@ describe('Registry v2 with Target', () => {
 
     it('existing v1 agent gets target null on re-registration', () => {
       withTempRegistry(() => {
-        const realPath = path.join(os.homedir(), '.agent-attention', 'agents.json');
+        const realPath = path.join(tmpHome, 'agents.json');
         const v1Data = {
           version: 1,
           agents: [

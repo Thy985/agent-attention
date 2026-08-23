@@ -6,13 +6,31 @@ import { EventName, EVENT_PRIORITY } from '../events';
 /** Title prefix shown on every Toast. */
 const APP_NAME = 'Agent Attention';
 
-/** Resolve the daemon CLI path for toast action callbacks. */
+/**
+ * Resolve the daemon CLI path for toast action callbacks.
+ * Used for "Mark all read" / "Mark event read" actions invoked from toast.
+ */
 function getDaemonCliPath(): string {
   const envPath = process.env.AGENT_ATTENTION_CLI;
   if (envPath) return envPath;
-  const local = path.join(__dirname, '..', 'dist', 'daemon-cli.js');
+  // At runtime this module lives at dist/notification/win32.js, so
+  // daemon-cli.js sits ONE level up at dist/daemon-cli.js.
+  // (P1-4 fix: the old '..\\dist\\daemon-cli.js' resolved to
+  //  dist/dist/daemon-cli.js which never exists.)
+  const local = path.join(__dirname, '..', 'daemon-cli.js');
   if (require('fs').existsSync(local)) return local;
-  // Fallback for global installs
+  return local;
+}
+
+/** Resolve the CenterWindow.ps1 path. */
+function getCenterPath(): string {
+  const envPath = process.env.AGENT_ATTENTION_CENTER;
+  if (envPath) return envPath;
+  // After build, dist/notification/win32.js lives at dist/notification/win32.js.
+  // CenterWindow.ps1 is shipped under src/center/ via package.json "files".
+  // So from dist/notification/ we need to go up two levels to reach src/center/.
+  const local = path.join(__dirname, '..', '..', 'src', 'center', 'CenterWindow.ps1');
+  if (require('fs').existsSync(local)) return local;
   return local;
 }
 
@@ -28,7 +46,7 @@ export async function notify(
 ): Promise<void> {
   const isUrgent = EVENT_PRIORITY[event] === 'P0';
   const cliPath = getDaemonCliPath();
-  const centerPath = path.join(__dirname, '..', 'src', 'center', 'CenterWindow.ps1');
+  const centerPath = getCenterPath();
   const stateDir   = path.join(os.homedir(), '.agent-attention');
 
   await new Promise<void>((resolve, reject) => {
@@ -38,14 +56,21 @@ export async function notify(
         message,
         sound: isUrgent ? false : soundEnabled ? 'Notification.Default' : false,
         wait: true,  // block until user interacts with the toast
-        actions: [
-          { action: 'activate', arguments: 'center', content: 'View' },
-          { action: 'dismiss',  arguments: '',       content: 'Dismiss' },
-        ],
+        // P1-1 fix: actions MUST be a string array (snoretoast -b expects
+        // "label1;label2"). Passing object arrays results in
+        // "[object Object];[object Object]" via Array.prototype.toString.
+        actions: ['View', 'Dismiss'],
       } as any,
       (_err: Error | null, response: any) => {
-        if (response === 'activate') {
-          // Open Center window on toast click
+        // node-notifier lowercases the activationType (button label) before
+        // delivery. Click on body → 'activate'. Click on "View" → 'view'.
+        // Click on "Dismiss" → 'dismiss'.
+        const action = typeof response === 'string'
+          ? response.toLowerCase().trim()
+          : '';
+
+        if (action === 'view' || action === 'activate') {
+          // Open Center window on toast click or "View" button
           try {
             const { spawn } = require('child_process');
             spawn('powershell', [
@@ -54,13 +79,17 @@ export async function notify(
               '-StatePath', path.join(stateDir, 'state.json'),
               '-RegistryPath', path.join(stateDir, 'agents.json'),
             ], { windowsHide: true });
-          } catch {}
-        } else if (response === 'dismiss') {
+          } catch (err) {
+            try { console.warn(`[agent-notify] failed to open Center: ${err instanceof Error ? err.message : String(err)}`); } catch {}
+          }
+        } else if (action === 'dismiss') {
           // Mark all read on dismiss
           try {
             const { spawn } = require('child_process');
             spawn('node', [cliPath, 'mark-all-read'], { windowsHide: true });
-          } catch {}
+          } catch (err) {
+            try { console.warn(`[agent-notify] failed to mark-all-read: ${err instanceof Error ? err.message : String(err)}`); } catch {}
+          }
         }
         resolve();
       },
