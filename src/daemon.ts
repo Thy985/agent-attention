@@ -6,6 +6,7 @@ import * as os from 'os';
 import { spawn, ChildProcess } from 'child_process';
 import { readState } from './state/AttentionState';
 import { getUiMode, resolveNativeUiPath } from './ui-host';
+import { startPipeServer, pushStateToClients, stopPipeServer } from './pipeline/ipc';
 
 export interface DaemonOptions {
   statePath: string;
@@ -83,6 +84,7 @@ export function createDaemon(options: DaemonOptions): Daemon {
   let pidCheckTimer: NodeJS.Timeout | null = null;
   let stopped = false;
   let lastStateHash = '';
+  const stateDir = path.dirname(options.statePath);
 
   const log = (msg: string) => daemonLog(msg, options.debug);
 
@@ -224,11 +226,15 @@ export function createDaemon(options: DaemonOptions): Daemon {
     log(`chokidar error: ${err}`);
   });
 
+  // Start IPC server for C# UI mode (real-time state push)
+  if (options.uiExecutablePath) {
+    startPipeServer(stateDir);
+  }
   spawnTray();
 
   // Push initial state immediately
   setTimeout(() => {
-    if (!stopped) pushStateToTrayFile();
+    if (!stopped) { pushStateToTrayFile(); if (options.uiExecutablePath) { pushStateToClients(stateDir); } }
   }, 500);
 
   // Periodic tray liveness check
@@ -252,6 +258,7 @@ export function createDaemon(options: DaemonOptions): Daemon {
       // Invoke-Exit which sets Visible=$false, making Windows immediately
       // reclaim the shell icon handle.
       try { fs.unlinkSync(options.trayStatePath); } catch {}
+      stopPipeServer();
       clearTrayPid(options.trayPidPath);
 
       if (trayProc) {

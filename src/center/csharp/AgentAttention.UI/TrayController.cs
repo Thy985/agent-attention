@@ -1,3 +1,4 @@
+using System;
 using System.Drawing;
 using System.IO;
 using System.Windows.Threading;
@@ -11,6 +12,7 @@ public sealed class TrayController : IDisposable
     private readonly CommandRunner _commands;
     private readonly string _trayStatePath;
     private readonly string _daemonPidPath;
+    private readonly IpcClient? _ipc;
     private readonly WinForms.NotifyIcon _notifyIcon=new();
     private readonly DispatcherTimer _refreshTimer=new();
     private readonly DateTime _startedAt=DateTime.UtcNow;
@@ -23,7 +25,8 @@ public sealed class TrayController : IDisposable
     public event EventHandler? ShowCenterRequested;
     public event EventHandler? ExitRequested;
 
-    public TrayController(StateStore store,CommandRunner commands,string trayStatePath,string statePath)
+    public TrayController(StateStore store, CommandRunner commands,
+        string trayStatePath, string statePath)
     {
         _store=store;
         _commands=commands;
@@ -41,10 +44,19 @@ public sealed class TrayController : IDisposable
 
         _refreshTimer.Interval=TimeSpan.FromMilliseconds(500);
         _refreshTimer.Tick+=(_,_)=>Refresh();
+
+        // Try to connect via IPC if port file exists
+        var stateDir=Path.GetDirectoryName(statePath);
+        if(!string.IsNullOrWhiteSpace(stateDir) && IpcClient.CanConnect(stateDir))
+        {
+            _ipc=new IpcClient(stateDir, store);
+            _ipc.OnStateUpdate+=OnIpcStateUpdate;
+        }
     }
 
     public void Start()
     {
+        _ipc?.Start();
         Refresh();
         _refreshTimer.Start();
     }
@@ -52,6 +64,7 @@ public sealed class TrayController : IDisposable
     public void Stop()
     {
         _refreshTimer.Stop();
+        _ipc?.Stop();
         _notifyIcon.Visible=false;
     }
 
@@ -66,6 +79,16 @@ public sealed class TrayController : IDisposable
         if(signature==_lastSignature)return;
         _lastSignature=signature;
 
+        UpdateIcon(state);
+        UpdateMenu(state);
+        _notifyIcon.Visible=state.Visible||state.UnreadCount>0;
+    }
+
+    private void OnIpcStateUpdate(AttentionState state)
+    {
+        var sig=$"{state.Visible}|{state.UnreadCount}|{string.Join("|",state.Events.Select(e=>$"{e.Id}:{e.Read}"))}";
+        if(sig==_lastSignature)return;
+        _lastSignature=sig;
         UpdateIcon(state);
         UpdateMenu(state);
         _notifyIcon.Visible=state.Visible||state.UnreadCount>0;
@@ -98,19 +121,13 @@ public sealed class TrayController : IDisposable
         {
             var pid=int.Parse(File.ReadAllText(_daemonPidPath).Trim());
             using var process=System.Diagnostics.Process.GetProcessById(pid);
-            if(process.HasExited)
-            {
-                RequestExit();
-                return false;
-            }
+            return !process.HasExited;
         }
         catch(Exception)
         {
             RequestExit();
             return false;
         }
-
-        return true;
     }
 
     private void OnNotifyIconClick()
@@ -120,7 +137,6 @@ public sealed class TrayController : IDisposable
             _suppressClick=false;
             return;
         }
-
         ShowCenterRequested?.Invoke(this,EventArgs.Empty);
     }
 
@@ -130,7 +146,8 @@ public sealed class TrayController : IDisposable
         using(var graphics=Graphics.FromImage(bitmap))
         {
             graphics.SmoothingMode=System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-            using var background=new SolidBrush(state.UnreadCount>0?Color.FromArgb(229,72,77):Color.FromArgb(88,166,255));
+            using var background=new SolidBrush(
+                state.UnreadCount>0?Color.FromArgb(229,72,77):Color.FromArgb(88,166,255));
             graphics.FillEllipse(background,1,1,14,14);
             if(state.UnreadCount>0)
             {
@@ -151,7 +168,9 @@ public sealed class TrayController : IDisposable
         _iconHandle=bitmap.GetHicon();
         _icon=Icon.FromHandle(_iconHandle);
         _notifyIcon.Icon=_icon;
-        _notifyIcon.Text=state.UnreadCount==0?"Agent Attention — no unread":$"Agent Attention — {state.UnreadCount} unread";
+        _notifyIcon.Text=state.UnreadCount==0
+            ?"Agent Attention — no unread"
+            :$"Agent Attention — {state.UnreadCount} unread";
     }
 
     private static FontStyle Bold=>FontStyle.Bold;
