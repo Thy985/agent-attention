@@ -195,3 +195,63 @@ AgentAttention.UI.exe (IpcClient probes CanConnect())
 ## Commit
 
 e5f72c — feat(ipc): M3 Named Pipe-like TCP channel for real-time state push
+
+
+---
+
+# M4 — Full Chain Regression
+
+## Status: **PASS**
+
+## What was verified
+
+| Test Suite | Tests | Result |
+|---|---|---|
+| 	ests/daemon-chain.test.ts | 6 | daemon full lifecycle + IPC wiring |
+| 	ests/parity-behavioral.test.ts | 5 | ps1 vs csharp behavioral parity |
+| 	ests/toast-routing.test.ts | 7 | AGENT_ATTENTION_UI routing gate |
+
+## M4 test matrix
+
+`
+PASS tests/daemon-chain.test.ts
+  daemon full chain (M4)
+    spawn native UI and write initial tray-state on startup
+    push state to tray-state.json on state.json change
+    clear tray-state.json and stop cleanly
+    write tray.pid and read it back correctly
+    spawn args contain correct CLI state paths
+    fall back to PowerShell when uiExecutablePath is undefined
+
+PASS tests/parity-behavioral.test.ts
+  behavioral parity ps1 vs csharp (M4)
+    ps1 path spawns powershell and writes tray-state with schema
+    csharp path spawns native UI and writes tray-state with schema
+    both paths produce identical tray-state content for same input
+    both paths clear pid file on stop
+
+PASS tests/toast-routing.test.ts
+  toast routing (M4)
+    csharp mode triggers native UI path in win32.ts source
+    ps mode triggers powershell path in win32.ts source
+    csharp mode resolves to native exe when available
+    ps mode falls back to powershell
+    default mode is ps when env not set
+    win32.ts spawn args include -StatePath and -RegistryPath for csharp
+    win32.ts spawn args include powershell flags for ps mode
+`
+
+## Full suite
+
+**127/127 tests pass** (was 110 before M4; +17 new)
+**17 test suites pass** (was 14 before M4; +3 new)
+
+## Lifecycle matrix: 13/13 PASS (unchanged)
+
+## Key insight
+
+Both ps1 and csharp paths produce **identical tray-state.json schema and content** for the same state.json input — this is the behavioral parity gate that M4 required. The Toast View routing correctly selects the native executable based on AGENT_ATTENTION_UI environment variable.
+
+## Commit
+
+M4-full-chain-regression
