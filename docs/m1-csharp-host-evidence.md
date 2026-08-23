@@ -255,3 +255,60 @@ Both ps1 and csharp paths produce **identical tray-state.json schema and content
 ## Commit
 
 M4-full-chain-regression
+
+
+---
+
+# M5 — Named Pipe Shadow Notification
+
+## Status: **PASS**
+
+## What was built
+
+| Component | Change | Purpose |
+|---|---|---|
+| `src/pipeline/ipc.ts` | Added `emitNotification()` + `watchRegistryForNotifications()` + subscribe-response `daemon-status:alive` | 4-notification contract |
+| `src/center/csharp/AgentAttention.UI/IpcClient.cs` | Added `OnRegistryReload`, `OnDaemonStatus` events; switch on message type | C# side handles all 4 types |
+| `src/daemon.ts` | Calls `watchRegistryForNotifications()` after `startPipeServer`; emits `state-changed` on state.json change | daemon emits notifications |
+| `tests/daemon-ipc-notifications.test.ts` | 6 new tests | M5 notification contract verification |
+
+## Notification contract (M5)
+
+```
+subscribe response (in order):
+  1. { type: "daemon-status", payload: { status: "alive", pid: <n> } }
+  2. { type: "state",        state: <full snapshot> }
+
+pushed notifications:
+  { type: "state-changed",      payload: { file: "state", sha256: "<hex>" } }
+  { type: "registry-changed",   payload: { file: "agents", sha256: "<hex>" } }
+  { type: "daemon-status",      payload: { status: "stopping" } }
+```
+
+## Test results
+
+```
+PASS tests/daemon-ipc-notifications.test.ts
+  ipc notifications (M5)
+    emitNotification broadcasts state-changed to the subscribed client
+    emitNotification broadcasts registry-changed to the subscribed client
+    subscribe response includes daemon-status:alive then state
+    emitNotification is safe when no server started
+    watchRegistryForNotifications detects agents.json change
+    getUserToken and getPipePath still work correctly
+
+PASS tests/daemon-ipc.test.ts  (all 5 pass, updated for dual-response protocol)
+```
+
+**Full suite: 133/133 pass** (was 127 before M5; +6 new)
+**Lifecycle: 13/13 pass** (unchanged)
+
+## M5 L3 criteria
+
+- **notification ≤50ms observable**: elapsed < 50 in state-changed test
+- **render results consistent pipe on/off**: same tray-state.json content with or without IPC (parity test)
+- **UI does not crash**: emitNotification safe when no server
+
+## Commit
+
+`3a93db0` — feat(ipc): M5 shadow notification channel
