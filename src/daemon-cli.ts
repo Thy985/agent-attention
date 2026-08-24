@@ -159,6 +159,11 @@ function getStatus(): DaemonStatus {
   } catch {
     trayRunning = false;
   }
+  // Also check C# UI process via tray PID file
+  if (!trayRunning) {
+    const csharpPid = readTrayPid();
+    if (csharpPid && isProcessRunning(csharpPid)) trayRunning = true;
+  }
 
   const stateValid = fs.existsSync(STATE_PATH);
   const startupHook = fs.existsSync(path.join(STARTUP_DIR, 'agent-attention.vbs'));

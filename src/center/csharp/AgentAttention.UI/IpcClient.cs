@@ -33,6 +33,7 @@ public sealed class IpcClient : IDisposable
     private int _port;
     private readonly Dictionary<string, TaskCompletionSource<PipeMessage>> _pendingCommands = new();
     private string? _token;
+    private bool _authRejected;
 
     public event Action<AttentionState>? OnStateUpdate;
     public event Action? OnRegistryReload;
@@ -118,6 +119,14 @@ public sealed class IpcClient : IDisposable
                 using var stream=client.GetStream();
                 using var writer=new StreamWriter(stream,new UTF8Encoding(false)){AutoFlush=true};
                 using var reader=new StreamReader(stream,new UTF8Encoding(false));
+                // Re-read token on each reconnect to handle daemon restart
+                if (_token == null || _token.Length < 32)
+                    _token = ReadAuthSecret(_stateDir);
+                if (_authRejected)
+                {
+                    _authRejected = false;
+                    break;
+                }
                 // M8 P0: auth handshake before subscribe
                 await writer.WriteLineAsync("{\"type\":\"hello\",\"token\":\""+_token+"\"}");
                 await writer.WriteLineAsync("{\"type\":\"subscribe\"}");
@@ -142,7 +151,8 @@ public sealed class IpcClient : IDisposable
                                 if(msg.Status!=null)OnDaemonStatus?.Invoke(msg.Status);
                                 break;
                             case "auth-rejected":
-                                _running=false;
+                                // M8 P1 fix: fall back to polling — daemon may have restarted with new token
+                                _authRejected = true;
                                 break;
                             case "cmd-ack":
                                 if(msg.RequestId!=null
