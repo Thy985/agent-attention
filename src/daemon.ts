@@ -169,7 +169,7 @@ export function createDaemon(options: DaemonOptions): Daemon {
 
     trayProc.on('exit', (code) => {
       log(`tray process exited with code ${code}`);
-     clearTrayPid(options.trayPidPath);
+      clearTrayPid(options.trayPidPath);
       trayProc = null;
       if (!stopped) {
         setTimeout(() => {
