@@ -47,36 +47,34 @@ export function readState(statePath: string): State {
   if (!fs.existsSync(statePath)) {
     return { ...DEFAULT_STATE, updatedAt: Date.now() };
   }
+  // Phase 1: read and parse (critical — must succeed to return valid state)
+  let parsed: State;
   try {
     let raw = fs.readFileSync(statePath, 'utf-8');
     // Strip UTF-8 BOM if present (PowerShell Set-Content adds one)
     if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
-    const parsed = JSON.parse(raw) as State;
-    // Fix unreadCount: recompute from events (handles legacy data without 'read' field)
-    const actualUnread = parsed.events.filter((e: StateEvent) => !e.read).length;
-    const unreadChanged = actualUnread !== parsed.unreadCount;
-    if (unreadChanged) {
-      parsed.unreadCount = actualUnread;
-    }
-    // Ensure visible is set based on events (backward-compat: old state files lack this field)
-    let visibleChanged = false;
-    if (parsed.visible === undefined) {
-      parsed.visible = parsed.events.length > 0;
-      visibleChanged = true;
-    }
-    // P1-7 fix: only rewrite the file when we actually changed a value.
-    // Every readState call previously rewrote, which (combined with chokidar
-    // watching the same path) caused an infinite change loop in the daemon.
-    if (unreadChanged || visibleChanged) {
-      const tmpPath = `${statePath}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
-      fs.writeFileSync(tmpPath, JSON.stringify(parsed, null, 2), 'utf-8');
-      fs.renameSync(tmpPath, statePath);
-    }
-    return parsed;
+    parsed = JSON.parse(raw) as State;
   } catch {
     console.warn(`[agent-attention] state.json corrupted, using defaults`);
     return { ...DEFAULT_STATE, updatedAt: Date.now() };
   }
+  // Phase 2: fix legacy data (non-critical — parsed data is still valid)
+  const actualUnread = parsed.events.filter((e: StateEvent) => !e.read).length;
+  if (actualUnread !== parsed.unreadCount) {
+    parsed.unreadCount = actualUnread;
+  }
+  if (parsed.visible === undefined) {
+    parsed.visible = parsed.unreadCount > 0;
+  }
+  // Phase 3: attempt rewrite to persist corrected values (non-critical)
+  try {
+    const tmpPath = `${statePath}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
+    fs.writeFileSync(tmpPath, JSON.stringify(parsed, null, 2), 'utf-8');
+    fs.renameSync(tmpPath, statePath);
+  } catch {
+    // Rewrite failed (e.g. EPERM on Windows). The parsed data is still valid.
+  }
+  return parsed;
 }
 
 const MAX_EVENTS = 20;
@@ -92,18 +90,28 @@ function atomicWrite(statePath: string, state: State): void {
   // even when multiple agent-notify invocations race.
   const tmpPath = `${statePath}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
   fs.writeFileSync(tmpPath, JSON.stringify(state, null, 2), 'utf-8');
-  try {
-    fs.renameSync(tmpPath, statePath);
-  } catch (err: any) {
-    // EPERM on Windows when another process (e.g. daemon with chokidar watch)
-    // holds the file open. Fall back to direct write — safe because we hold
-    // the file exclusively in this process.
-    if (err.code === 'EPERM' || err.code === 'EACCES') {
-      fs.writeFileSync(statePath, JSON.stringify(state, null, 2), 'utf-8');
-    } else {
-      throw err;
+  // Retry rename up to 3 times for transient Windows file locks (EPERM).
+  // Do NOT fall back to writeFileSync — it is non-atomic and can silently
+  // overwrite a concurrent writer's newer state with stale data.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      fs.renameSync(tmpPath, statePath);
+      return; // success
+    } catch (err: any) {
+      if (err.code !== 'EPERM' && err.code !== 'EACCES') {
+        // Non-lock error — rethrow
+        try { fs.unlinkSync(tmpPath); } catch {}
+        throw err;
+      }
+      // Transient lock — clean up and retry
+      try { fs.unlinkSync(tmpPath); } catch {}
+      if (attempt < 2) {
+        fs.writeFileSync(tmpPath, JSON.stringify(state, null, 2), 'utf-8');
+      }
     }
   }
+  // All retries exhausted — state may be stale but we avoid corrupting it.
+  console.warn('[agent-attention] atomicWrite failed: could not rename tmp file after 3 retries');
   try { fs.unlinkSync(tmpPath); } catch {}
 }
 
@@ -212,10 +220,6 @@ export function markAgentEventsRead(statePath: string, agentId: string): State {
     updatedAt: Date.now(),
     unreadCount: newUnreadCount,
     events,
-    // P2-2 fix: visible must reflect whether ANY unread events remain,
-    // not whether ANY events exist at all. The old expression
-    // `events.length > 0` kept the tray icon visible even after marking
-    // everything read, so the icon would never auto-hide.
     visible: newUnreadCount > 0,
   };
   atomicWrite(statePath, next);
