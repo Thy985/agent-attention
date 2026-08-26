@@ -10,11 +10,15 @@
   "main": "./dist/index.js",
   "scripts": {
     "build": "tsc",
+    "build:ui": "mise exec -- dotnet build src/center/csharp/AgentAttention.UI/AgentAttention.UI.csproj -c Release",
+    "publish:ui": "mise exec -- dotnet publish src/center/csharp/AgentAttention.UI/AgentAttention.UI.csproj -c Release -r win-x64 --self-contained false -o src/center/csharp/dist/win-x64",
     "test": "jest --forceExit",
     "prepare": "npm run build",
     "bin:install": "npm run build && node dist/scripts/install-daemon.js",
     "bin:uninstall": "npm run build && node dist/scripts/uninstall-daemon.js",
     "start:daemon": "node dist/daemon.js",
+    "test:ui:harness": "dotnet run --project src/center/csharp/AgentAttention.UI.Harness/AgentAttention.UI.Harness.csproj -c Release --no-build",
+    "verify:m1": "pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify-csharp-ui-m1.ps1",
     "bin:agent": "node dist/daemon-cli.js"
   },
   "keywords": [
@@ -26,7 +30,7 @@
   ],
   "files": [
     "dist/",
-    "src/center/*.ps1"
+    "src/center/csharp/dist/win-x64/**/*"
   ],
   "license": "MIT",
   "engines": {
@@ -52,3 +56,4 @@
     "typescript": "^5.6.0"
   }
 }
+

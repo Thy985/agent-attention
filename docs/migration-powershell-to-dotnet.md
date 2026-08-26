@@ -2,7 +2,7 @@
 
 > 状态：实现前评审稿（v2，已吸纳架构评审）
 > 关联：`README` / `PRD v0.3` / `SYSTEM_MAP.md §6.2` / `CLAUDE.md` / `BUG_FINDINGS.md` / `TECH-DEBT.md` / `behavior-contract.md`
-> 一句话：**这次迁移是「UI Host 行为对等迁移」，不是「PowerShell → C# 重写」。** 只换实现载体（PowerShell GUI → C# 单 Host 进程），并**分两步**引入通信模型变化（文件轮询 → Named Pipe），每步只引入一种变量。
+> 一句话：**这次迁移是「UI Host 行为对等迁移」，不是「PowerShell → C# 重写」。** 只换实现载体（PowerShell GUI → C# 单 Host 进程），并**分三步**引入通信模型变化（文件轮询 → TCP 通知 → TCP 数据面 → TCP 控制面），每步只引入一种变量。
 
 ---
 
@@ -12,13 +12,14 @@
 | 变化 | 本质 | 风险 |
 |---|---|---|
 | **A. PowerShell → C#/.NET** | 实现载体迁移（UI Host 换了） | 引入 C# 构建/进程/生命周期变量 |
-| **B. 文件轮询 → Named Pipe** | 通信模型迁移（通知通道换了） | 引入管道/重连/ACL/帧协议变量 |
+| **B. 文件轮询 → TCP IPC** | 通信模型迁移（通知通道换了） | 引入 TCP/重连/帧协议变量 |
+> **注**：原设计为 Named Pipe，实际实现采用 TCP localhost（详见 docs/tcp-vs-named-pipe-decision.md）。
 
 > **若 A、B 绑在一起做**，一旦迁移后行为异常，你无法判断是 UI Host、IPC、生命周期还是 State 传播出的问题。**路线改为 M0–M8，每步只引入一种变量**（见 §8）。
 
 ### 1.2 验收语言必须精确（替换旧版"90% bug 消失"）
 - ❌ 旧表述："P0/P1/P2 中约 90% 高价值 bug 集中在 PowerShell UI 层；换成 C# 后大半根本不会发生。"
-- ✅ 新表述：**"C# 迁移预计消除一类已识别的 PowerShell-host 特有缺陷（作用域/`GetNewClosure`/插值/`Start-Sleep`/无确定 Dispose）；但它不证明系统级可靠性。"** 多进程、State 竞态、单实例、CLI launcher、安装路径、Pipe 重连等系统性问题仍需各自验证。
+- ✅ 新表述：**"C# 迁移预计消除一类已识别的 PowerShell-host 特有缺陷（作用域/`GetNewClosure`/插值/`Start-Sleep`/无确定 Dispose）；但它不证明系统级可靠性。"** 多进程、State 竞态、单实例、CLI launcher、安装路径、TCP 重连等系统性问题仍需各自验证。
 
 ### 1.3 最重要的冻结项是「行为契约」，不是 `state.json`
 文件契约只是行为契约的一部分。详见 `behavior-contract.md`（M0 交付物）。C# 只实现语义，不重新定义。
@@ -47,7 +48,7 @@ Node/TS         = core           （agent-notify + daemon 业务逻辑）
 daemon         = local UI coordinator / control-plane endpoint
                                 （observation + coordination + IPC；可读写 State，可接受 UI 命令）
 C# Host        = desktop UI host （WinForms Tray + WPF Center，单进程）
-Named Pipe     = realtime / control channel （通知 + 命令回执）
+TCP            = realtime / control channel （通知 + 命令回执，localhost 绑定）
 ```
 
 > 这样 Agent 后续不会再纠结"daemon 到底能不能处理命令"——**能**。daemon 是协调/控制面端点，State 仍是真相。UI 的"核心状态变更"请求经 daemon（或 CLI）落盘，UI 自己只做展示与 Windows 交互。
@@ -76,7 +77,7 @@ Named Pipe     = realtime / control channel （通知 + 命令回执）
 - **Registry Contract**：`agents.json`（agents[] + target），schema 零改。
 - **Tray Contract**：Mutex `Local\agent-attention-tray-<user>`；单/双击去抖；双击→`mark-all-read`；事件项→`mark-event`；菜单→拉 Center。
 - **Center Contract**：Mutex `Local\agent-attention-center-<user>`；渲染≤8 条；轮询 2000ms；全部已读 / 逐条已读 / 点击 agent→`jump`。
-- **Command Contract**：mark-read / mark-all-read / jump 在 M1–M6a 经既有 Node CLI；M6b 才可迁 Pipe RPC。UI 不得直写 State。`open-center` 不走 daemon 命令或 Pipe：Tray 进程内调用，Toast 走单实例 activation handshake。
+- **Command Contract**：mark-read / mark-all-read / jump 在 M1–M6a 经既有 Node CLI；M6b 才可迁 TCP RPC。UI 不得直写 State。`open-center` 不走 daemon 命令或 TCP：Tray 进程内调用，Toast 走单实例 activation handshake。
 - **Target Contract**：`jump` 经 Win32 聚焦注册终端目标，best-effort，不改状态。
 
 > **铁律**：C# 只实现上述语义，不为"C# 便利"改语义。任何语义改动先回 `behavior-contract.md` 评审。
@@ -114,7 +115,7 @@ Named Pipe     = realtime / control channel （通知 + 命令回执）
             │
             ├──────── writes ────────→ tray-state.json   (durable fallback)
             │
-            └──── Named Pipe ────────→ AgentAttention.UI.exe   (realtime / control)
+            └──── TCP localhost ──────→ AgentAttention.UI.exe   (realtime / control)
                                              │
                                 ┌────────────┴────────────┐
                                 │                         │
@@ -129,7 +130,7 @@ Named Pipe     = realtime / control channel （通知 + 命令回执）
 State/Registry = truth
 Node          = core
 daemon        = coordinator
-Pipe          = realtime / control channel
+TCP           = realtime / control channel（localhost，端口通过 ipc-port.txt 握手）
 C# Host       = desktop UI host（单进程，Tray+Center 同源）
 ```
 
@@ -144,9 +145,9 @@ C# Host       = desktop UI host（单进程，Tray+Center 同源）
 | **M2 Tray parity** | Tray 行为 | C# Tray 等价实现 Mutex/去抖/双击已读/事件项已读/菜单拉 Center；全部状态命令经 CLI 适配器 | L3：点击不卡死（P0-2 消亡）、双击 `unreadCount==0`、去抖等价 | 切回 `TrayIcon.ps1` |
 | **M3 Center parity** | Center 行为 | C# Center 等价实现≤8 条/2000ms 轮询/全部已读/逐条已读/点击 agent→CLI `jump` | L3：渲染、已读 `unreadCount==0`、跳转 `GetForegroundWindow()==hwnd` | 切回 `CenterWindow.ps1` |
 | **M4 全链路回归** | — | 行为对等门全过；对比 ps1 与 csharp 实机行为一致；Toast View 按 `AGENT_ATTENTION_UI` 选择正确 Host | 对等矩阵 100% 通过 | — |
-| **M5 Named Pipe 影子通知** | Pipe 通知通道 | daemon 起 Pipe **仅发通知**：`state-changed` / `registry-changed` / `daemon-status`；UI 收到后仍从文件读取 snapshot，并保留原轮询作为对照 | L3：通知 ≤50ms 可观测；Pipe on/off 渲染结果一致；UI 不崩 | daemon 关 Pipe，UI 回退纯轮询 |
-| **M6a Pipe 接管刷新** | 实时数据面 | Pipe 成为刷新 fast path；断线降级轮询文件；重连后丢弃通知并从 State 文件重建 full snapshot | L3：零轮询延迟、daemon 重启自动重连、杀 Pipe 后 UI 继续可用 | 关闭 fast path，回退文件轮询 |
-| **M6b Pipe 命令 RPC** | 双向控制面 | 仅迁移 `cmd-mark-read`/`cmd-mark-all-read`/`cmd-jump`，带 ack/error；失败自动回退 CLI；CLI 命令面保留为独立入口 | L3：命令有回执；RPC 失败时 CLI fallback 成功；退出码语义可对照 | 关闭 Pipe 命令，固定走 CLI |
+| **M5 TCP 影子通知** | TCP 通知通道 | daemon 起 TCP server **仅发通知**：`state-changed` / `registry-changed` / `daemon-status`；UI 收到后仍从文件读取 snapshot，并保留原轮询作为对照 | L3：通知 ≤50ms 可观测；TCP on/off 渲染结果一致；UI 不崩 | daemon 关 TCP，UI 回退纯轮询 |
+| **M6a TCP 接管刷新** | 实时数据面 | TCP 成为刷新 fast path；断线降级轮询文件；重连后丢弃通知并从 State 文件重建 full snapshot | L3：零轮询延迟、daemon 重启自动重连、杀 TCP 后 UI 继续可用 | 关闭 fast path，回退文件轮询 |
+| **M6b TCP 命令 RPC** | 双向控制面 | 仅迁移 `cmd-mark-read`/`cmd-mark-all-read`/`cmd-jump`，带 ack/error；失败自动回退 CLI；CLI 命令面保留为独立入口 | L3：命令有回执；RPC 失败时 CLI fallback 成功；退出码语义可对照 | 关闭 TCP 命令，固定走 CLI |
 | **M7 默认切换与浸泡** | 默认载体 | `AGENT_ATTENTION_UI` 默认改 `csharp`；保留 `ps` 回滚开关一个版本周期；收集崩溃、句柄、图标、Toast 激活指标 | 一个版本周期内 P0/P1 为零，长跑 GUI 句柄稳定 | 默认切回 `ps` |
 | **M8 删除 PowerShell** | 去掉旧载体 | 删两个 `.ps1`、移除灰度开关、更新 package files/scripts、安装器和文档同步 | Jest/L2/L3/L4/L5 全过；文档无 `.ps1` 启动路径 | 从 git 历史恢复（删除前确认 tag/release 可回滚） |
 
@@ -154,62 +155,67 @@ C# Host       = desktop UI host（单进程，Tray+Center 同源）
 
 ---
 
-## 9. Named Pipe 设计（分阶段、简化、可降级）
+## 9. TCP IPC 设计（已实施，替代原 Named Pipe 方案）
+
+> **决策记录见** `docs/tcp-vs-named-pipe-decision.md`。
 
 ### 9.1 两个平面
 ```
 DATA PLANE      state.json / agents.json / dedup.json / tray-state.json   （真相，冻结）
-CONTROL/EVENT  Named Pipe                                                （实时/控制，可丢）
+CONTROL/EVENT   TCP localhost:35000-45000                                  （实时/控制，可丢）
 ```
-> **Pipe 丢消息没有关系，因为 State 可以重新 snapshot。** 这条写进协议头注释。
+> **TCP 丢消息没有关系，因为 State 可以重新 snapshot。** 这条写进协议头注释。
 
-### 9.2 第一阶段：单向通知通道（M5）
+### 9.2 端口发现机制
+- daemon 启动时绑定 35000-45000 范围内的随机端口
+- 端口写入 `$HOME/.agent-attention/ipc-port.txt`（原子 tmp+rename）
+- UI Host 启动时读取该文件获取当前端口
+- daemon 重启后新端口覆盖旧文件，UI 下次启动读取新端口
+
+### 9.3 第一阶段：单向通知通道（M5）
 仅 daemon→UI，三类消息：
 | type | 方向 | 说明 |
 |---|---|---|
-| `state-changed` | daemon→UI | 见 §9.4 |
+| `state-changed` | daemon→UI | 见 §9.6 |
 | `registry-changed` | daemon→UI | agents.json 变化通知 |
 | `daemon-status` | daemon→UI | daemon 存活/重启信号 |
 
-> **M5 阶段 Pipe 是单向 notification channel，不是 RPC。** UI 不回命令。
+> **M5 阶段 TCP 是单向 notification channel，不是 RPC。** UI 不回命令。
 
-### 9.3 命令阶段（M6b，数据面稳定后增量）
-仅迁移 `cmd-mark-read` / `cmd-mark-all-read` / `cmd-jump`。每条请求带 `requestId` 和 5 秒超时；daemon 返回 `{ ok, code }` 或结构化 error。RPC 失败、超时、断线时自动回退 Node CLI。CLI 命令面继续保留为独立入口和 fallback。`open-center` **不走 Pipe**：Tray 在 Host 内调用；Toast 走 §7 activation contract。
+### 9.4 命令阶段（M6b，数据面稳定后增量）
+仅迁移 `cmd-mark-read` / `cmd-mark-all-read` / `cmd-jump`。每条请求带 `requestId` 和 5 秒超时；daemon 返回 `{ ok, code }` 或结构化 error。RPC 失败、超时、断线时自动回退 Node CLI。CLI 命令面继续保留为独立入口和 fallback。`open-center` **不走 TCP**：Tray 在 Host 内调用；Toast 走 §7 activation contract。
 
-### 9.4 消息简化：只用 `state-changed`
-- ❌ 旧版同时定义 `event-pushed` + `unread-changed` → 两消息竞权、UI 不知谁是权威。
+### 9.5 帧协议
+- 帧格式：4 字节小端 uint32 长度前缀 + UTF-8 JSON；单帧上限 64KB
+- **TCP messages are notifications, not durable truth. After reconnect, the UI MUST rebuild a full snapshot by reading State files; it MUST NOT wait for or request TCP history.**
+- 连接：server 是 daemon（TcpListener），client 是唯一 UI Host（TcpClient）；同一时间只接受一个 client
+- UI 启动立即尝试一次，之后按 250ms 起步、5s 封顶、带 jitter 的指数退避连接
+- 重连：成功后丢弃已收消息、按当前文件内容重建 full snapshot
+
+### 9.6 消息简化：只用 `state-changed`
+- ❌ 旧版同时定义 `event-pushed` + `unread-changed` → 两消息竞权、UI 不知谁是权威
 - ✅ 第一版通知不携带业务 delta，只携带可校验的文件版本：
 ```json
 { "v": 1, "type": "state-changed", "file": "state", "contentSha256": "<hex>" }
 ```
-`contentSha256` 是原始文件字节的 SHA-256，不是新增 State schema 字段；daemon 可对相同 hash 的通知做合并。UI 收到后直接从 `state.json` 读取全量 snapshot，**不存在“向 Pipe 请求 snapshot”的动作**。数据量仅最近 ~20 条，无需 delta 协议。
-
-### 9.5 协议规则（写进代码注释）
-- 帧格式：4 字节小端 uint32 长度前缀 + UTF-8 JSON；单帧上限 64KB。
-- **Pipe messages are notifications, not durable truth. After reconnect, the UI MUST rebuild a full snapshot by reading State files; it MUST NOT wait for or request pipe history.**
-- 管道命名：`\\.\pipe\agent-attention-ui-<user-sid>`（单 Host 一个管道即可，Tray/Center 同进程共享）。
-- 连接：server 是 daemon，client 是唯一 UI Host；同一时间只接受一个 client。UI 启动立即尝试一次，之后按 250ms 起步、5s 封顶、带 jitter 的指数退避连接。
-- 重连：成功后丢弃已收消息、按当前文件内容重建 full snapshot；旧 notification 的 hash 不用于恢复历史。
-
-### 9.6 ACL（必须实机验证，不只代码审查）
-- 用 `NamedPipeServerStreamAcl` / `PipeSecurity` 设 DACL。
-- **验证矩阵（L3）**：
-  | 主体 | 期望 |
-  |---|---|
-  | 当前用户 | PASS（可连） |
-  | SYSTEM | PASS / expected |
-  | 另一本地用户 | **DENIED**（`UnauthorizedAccessException`） |
-- `FirstPipeInstance` 只约束 pipe server 实例，**不能替代** daemon/Tray/Center 生命周期锁——两者职责分离，各自保留。
+`contentSha256` 是原始文件字节的 SHA-256，不是新增 State schema 字段；daemon 可对相同 hash 的通知做合并。UI 收到后直接从 `state.json` 读取全量 snapshot，**不存在"向 TCP 请求 snapshot"的动作**。数据量仅最近 ~20 条，无需 delta 协议。
 
 ### 9.7 `tray-state.json` 长期保留为 fallback
 ```
-Pipe        = fast path
+TCP         = fast path
 tray-state.json = durable fallback
-state.json  = truth
+state.json    = truth
 ```
-daemon 始终写 `tray-state.json`；写入必须是临时文件 + rename，避免 C# fast path 断开时读到撕裂 JSON。UI Pipe 在→实时，Pipe 断→文件轮询。迁移有清晰降级路径。
+daemon 始终写 `tray-state.json`；写入必须是临时文件 + rename，避免 UI fast path 断开时读到撕裂 JSON。UI TCP 断→文件轮询。迁移有清晰降级路径。
 
----
+### 9.8 安全边界（TCP vs Named Pipe）
+
+Named Pipe 原设计的优势是 Windows ACL（用户级隔离）。TCP localhost 方案的等价保证来自：
+- **绑定范围**：仅 `127.0.0.1`，外部网络不可达
+- **端口随机化**：35000-45000 高位区间，降低扫描命中率
+- **握手协议**：UI 连接后需发送合法帧才能建立会话
+
+遗留风险：任何本机进程可扫描并连接开放端口。详见 `docs/tcp-vs-named-pipe-decision.md` §"遗留风险"。
 
 ## 10. 单 Host 进程设计（结构要点）
 

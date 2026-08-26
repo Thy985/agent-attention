@@ -128,7 +128,7 @@
   1. 新进程先探测 Tray Mutex。
   2. 若已有 Host 持有 Mutex，新进程 signal named event `Local\agent-attention-ui-open-center-<user>` 后立即退出 `0`；Host 收到信号后在自身 UI 线程 `Show()/Activate()` Center。
   3. 若没有已有 Host，新进程完成正常 Host 初始化并打开 Center。
-- 该契约只解决“激活哪个进程”，不携带业务 payload，也不替代 Named Pipe。禁止用 Toast 参数传递事件内容或状态写命令。
+- 该契约只解决“激活哪个进程”，不携带业务 payload，也不替代 TCP IPC。禁止用 Toast 参数传递事件内容或状态写命令。
 - Node 侧必须根据 `AGENT_ATTENTION_UI` 选择 C# exe 或 PowerShell 脚本；灰度期内不允许 Toast 固定 spawn `.ps1`。
 
 ## 8. Target Contract（跳转语义，冻结）

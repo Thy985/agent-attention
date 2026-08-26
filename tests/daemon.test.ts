@@ -28,13 +28,12 @@ describe('daemon (file-polling architecture)', () => {
   let daemon: { stop: () => Promise<void> } | null = null;
 
   const makeOptions = (dir: string): DaemonOptions => ({
-    statePath:     path.join(dir, 'state.json'),
-    powerShellPath: 'powershell',
-    trayScriptPath: 'src/center/TrayIcon.ps1',
-    trayStatePath: path.join(dir, 'tray-state.json'),
-    trayPidPath:   path.join(dir, 'tray.pid'),
-    cliPath:       path.join(dir, 'daemon-cli.js'),
-    debug:         false,
+    statePath:        path.join(dir, 'state.json'),
+    trayStatePath:    path.join(dir, 'tray-state.json'),
+    trayPidPath:      path.join(dir, 'tray.pid'),
+    cliPath:          path.join(dir, 'daemon-cli.js'),
+    uiExecutablePath: path.join(dir, 'AgentAttention.UI.exe'),
+    debug:            false,
   });
 
   beforeEach(() => {
@@ -44,6 +43,7 @@ describe('daemon (file-polling architecture)', () => {
     options.trayStatePath = opts.trayStatePath;
     options.trayPidPath   = opts.trayPidPath;
     options.cliPath       = opts.cliPath;
+    options.uiExecutablePath = undefined;
     mockedSpawn.mockClear();
   });
 
@@ -57,17 +57,25 @@ describe('daemon (file-polling architecture)', () => {
 
   const options: Partial<DaemonOptions> = {
     statePath: '',
-    powerShellPath: 'powershell',
-    trayScriptPath: 'src/center/TrayIcon.ps1',
     debug: false,
   };
 
-  it('spawns TrayIcon.ps1 without stdin pipe', async () => {
+  it('spawns the native UI host when configured', async () => {
+    const executable = path.join(tmpDir, 'AgentAttention.UI.exe');
+    fs.writeFileSync(executable, '');
+    options.uiExecutablePath = executable;
     daemon = createDaemon(options as DaemonOptions);
     await new Promise((r) => setTimeout(r, 50));
+
     expect(mockedSpawn).toHaveBeenCalledWith(
-      'powershell',
-      expect.arrayContaining(['-File', 'src/center/TrayIcon.ps1']),
+      executable,
+      expect.arrayContaining([
+        '-StatePath', options.statePath,
+        '-RegistryPath', path.join(tmpDir, 'agents.json'),
+        '-CliPath', options.cliPath,
+        '-TrayStatePath', options.trayStatePath,
+        '-TrayPidPath', options.trayPidPath,
+      ]),
       expect.objectContaining({ stdio: ['ignore', 'ignore', 'pipe'] }),
     );
   });

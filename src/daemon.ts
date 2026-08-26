@@ -5,14 +5,16 @@ import * as path from 'path';
 import * as os from 'os';
 import { spawn, ChildProcess } from 'child_process';
 import { readState } from './state/AttentionState';
+import { getUiMode, resolveNativeUiPath } from './ui-host';
+import { startPipeServer, pushStateToClients, stopPipeServer, emitNotification, watchRegistryForNotifications, registerRpcCommand } from './pipeline/ipc';
+import { dispatchCommand } from './commands';
 
 export interface DaemonOptions {
   statePath: string;
-  powerShellPath: string;
-  trayScriptPath: string;
-  trayStatePath: string;   // polling file written by daemon, read by TrayIcon.ps1
+  trayStatePath: string;   // polling file written by daemon, read by C# tray
   trayPidPath: string;     // PID file for tray lifecycle management
   cliPath: string;         // absolute path to daemon-cli.js (for tray double-click)
+  uiExecutablePath: string; // native C# UI host
   debug?: boolean;
 }
 
@@ -81,6 +83,7 @@ export function createDaemon(options: DaemonOptions): Daemon {
   let pidCheckTimer: NodeJS.Timeout | null = null;
   let stopped = false;
   let lastStateHash = '';
+  const stateDir = path.dirname(options.statePath);
 
   const log = (msg: string) => daemonLog(msg, options.debug);
 
@@ -92,7 +95,7 @@ export function createDaemon(options: DaemonOptions): Daemon {
     });
   }
 
-  /** Write current state to the polling file that TrayIcon.ps1 reads. */
+  /** Write current state to the polling file that the C# tray reads. */
   const pushStateToTrayFile = (): void => {
     // P3-7 fix: guard against a debounced push landing after stop() began.
     // Without this, stop() deletes tray-state.json to signal the tray to
@@ -140,26 +143,26 @@ export function createDaemon(options: DaemonOptions): Daemon {
   };
 
   const spawnTray = () => {
-    log(`spawning tray: ${options.powerShellPath} ${options.trayScriptPath}`);
-    const trayArgs = [
-        '-NoProfile',
-        '-ExecutionPolicy', 'Bypass',
-        '-File', options.trayScriptPath,
-        '-StatePath', options.statePath,
-        '-CliPath', options.cliPath,
-        '-TrayStatePath', options.trayStatePath,
-      ];
-    if (options.trayPidPath) trayArgs.push('-TrayPidPath', options.trayPidPath);
 
-    trayProc = spawn(
-      options.powerShellPath,
-      trayArgs,
-      {
-        stdio: ['ignore', 'ignore', 'pipe'],
-        windowsHide: true,
-        detached: false,
-      },
-    );
+  log(`spawning UI host: ${options.uiExecutablePath}`);
+  const registryPath = path.join(path.dirname(options.statePath), 'agents.json');
+  const trayArgs = [
+      '-StatePath', options.statePath,
+      '-RegistryPath', registryPath,
+      '-CliPath', options.cliPath,
+      '-TrayStatePath', options.trayStatePath,
+    ];
+  if (options.trayPidPath) trayArgs.push('-TrayPidPath', options.trayPidPath);
+
+  trayProc = spawn(
+    options.uiExecutablePath,
+    trayArgs,
+    {
+      stdio: ['ignore', 'ignore', 'pipe'],
+      windowsHide: true,
+      detached: false,
+    },
+  );
 
     // Write PID file so orphan cleanup can target this exact process (issue #1)
     writeTrayPid(options.trayPidPath, trayProc.pid!);
@@ -167,6 +170,7 @@ export function createDaemon(options: DaemonOptions): Daemon {
     trayProc.on('exit', (code) => {
       log(`tray process exited with code ${code}`);
       clearTrayPid(options.trayPidPath);
+      trayProc = null;
       if (!stopped) {
         setTimeout(() => {
           if (!stopped) spawnTray();
@@ -189,6 +193,7 @@ export function createDaemon(options: DaemonOptions): Daemon {
   watcher.on('change', () => {
     log(`state.json changed`);
     debouncedReload();
+    emitNotification(stateDir, 'state-changed', { file: 'state', sha256: crypto.createHash('sha256').update(fs.readFileSync(options.statePath)).digest('hex') });
   });
 
   watcher.on('add', () => {
@@ -200,11 +205,28 @@ export function createDaemon(options: DaemonOptions): Daemon {
     log(`chokidar error: ${err}`);
   });
 
+  // Start IPC server for C# UI mode (real-time state push)
+  if (options.uiExecutablePath) {
+    startPipeServer(stateDir);
+    watchRegistryForNotifications(stateDir);
+    // M6b: register IPC RPC command handlers
+    registerRpcCommand("mark-all-read", async () => {
+      const r = dispatchCommand("mark-all-read", []);
+      emitNotification(stateDir, "state-changed", { file: "state", sha256: "" });
+      return r;
+    });
+    registerRpcCommand("mark-event", async (args) => {
+      return dispatchCommand("mark-event", args);
+    });
+    registerRpcCommand("jump", async (args) => {
+      return dispatchCommand("jump", args);
+    });
+  }
   spawnTray();
 
   // Push initial state immediately
   setTimeout(() => {
-    if (!stopped) pushStateToTrayFile();
+    if (!stopped) { pushStateToTrayFile(); if (options.uiExecutablePath) { pushStateToClients(stateDir); } }
   }, 500);
 
   // Periodic tray liveness check
@@ -228,6 +250,7 @@ export function createDaemon(options: DaemonOptions): Daemon {
       // Invoke-Exit which sets Visible=$false, making Windows immediately
       // reclaim the shell icon handle.
       try { fs.unlinkSync(options.trayStatePath); } catch {}
+      stopPipeServer();
       clearTrayPid(options.trayPidPath);
 
       if (trayProc) {
@@ -260,11 +283,18 @@ if (require.main === module) {
   const trayStatePath = path.join(stateDir, 'tray-state.json');
   const trayPidPath   = path.join(stateDir, 'tray.pid');
   const daemonLockPath = path.join(stateDir, 'daemon.lock');
-  const trayScriptPath = path.join(__dirname, '..', 'src', 'center', 'TrayIcon.ps1');
   // P1-5 fix: this module runs as dist/daemon.js, so daemon-cli.js is its
   // sibling at dist/daemon-cli.js. (The old '..\\dist\\daemon-cli.js'
   // resolved to dist/dist/daemon-cli.js, which never exists.)
   const cliPath        = path.join(__dirname, 'daemon-cli.js');
+
+  const uiExecutablePath = resolveNativeUiPath();
+  if (!uiExecutablePath) {
+    console.error(
+      'AgentAttention.UI.exe not found. Build it or set AGENT_ATTENTION_UI_EXE.'
+    );
+    process.exit(1);
+  }
 
   const debug = process.env.AGENT_ATTENTION_DEBUG === '1';
 
@@ -328,11 +358,10 @@ if (require.main === module) {
 
   const daemon = createDaemon({
     statePath,
-    powerShellPath: 'powershell',
-    trayScriptPath,
     trayStatePath,
     trayPidPath,
     cliPath,
+    uiExecutablePath,
     debug,
   });
 
@@ -367,5 +396,5 @@ if (require.main === module) {
   });
 
   daemonLog(`started, watching ${statePath}`, debug);
-  daemonLog(`tray polling file: ${trayStatePath}`, debug);
+  daemonLog(`tray polling file: ${trayStatePath}`, debug)  // C# tray reads this
 }
