@@ -60,20 +60,29 @@ export function readState(statePath: string): State {
   }
   // Phase 2: fix legacy data (non-critical — parsed data is still valid)
   const actualUnread = parsed.events.filter((e: StateEvent) => !e.read).length;
-  if (actualUnread !== parsed.unreadCount) {
+  const unreadChanged = actualUnread !== parsed.unreadCount;
+  if (unreadChanged) {
     parsed.unreadCount = actualUnread;
   }
+  let visibleChanged = false;
   if (parsed.visible === undefined) {
     parsed.visible = parsed.unreadCount > 0;
+    visibleChanged = true;
   }
-  // Phase 3: attempt rewrite to persist corrected values (non-critical)
-  try {
-    const tmpPath = `${statePath}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
-    fs.writeFileSync(tmpPath, JSON.stringify(parsed, null, 2), 'utf-8');
-    fs.renameSync(tmpPath, statePath);
-  } catch {
-    // Rewrite failed (e.g. EPERM on Windows). The parsed data is still valid.
+  // P1-7 fix: only rewrite the file when we actually changed a value.
+  // Every readState call previously rewrote, which (combined with chokidar
+  // watching the same path) caused an infinite change loop in the daemon.
+  if (unreadChanged || visibleChanged) {
+    // Phase 3: attempt rewrite to persist corrected values (non-critical)
+    try {
+      const tmpPath = `${statePath}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`;
+      fs.writeFileSync(tmpPath, JSON.stringify(parsed, null, 2), "utf-8");
+      fs.renameSync(tmpPath, statePath);
+    } catch {
+      // Rewrite failed (e.g. EPERM on Windows). The parsed data is still valid.
+    }
   }
+  return parsed;
   return parsed;
 }
 
