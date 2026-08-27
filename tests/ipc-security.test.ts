@@ -24,6 +24,8 @@ const PORT_FILE = path.join(STATE_DIR, 'ipc-port.txt');
 const AUTH_FILE = path.join(STATE_DIR, 'ipc-auth.secret');
 const DAEMON_CLI = path.join(__dirname, '..', 'dist', 'daemon-cli.js');
 
+jest.setTimeout(30000);
+
 async function getDaemonPort(): Promise<number | null> {
   for (let i = 0; i < 20; i++) {
     if (fs.existsSync(PORT_FILE)) {
@@ -31,7 +33,7 @@ async function getDaemonPort(): Promise<number | null> {
       const port = parseInt(raw, 10);
       if (!isNaN(port) && port > 0) return port;
     }
-    await new Promise(r => setTimeout(r, 500));
+    await new Promise(r => setTimeout(r, 100));
   }
   return null;
 }

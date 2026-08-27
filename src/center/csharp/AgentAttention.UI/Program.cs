@@ -65,7 +65,6 @@ internal static class Program
             Log("activation event created");
 
             var store=new StateStore(options);
-            // M6b: create IPC client first, then wrap commands with RPC+CLI fallback
             IpcClient? ipc=null;
             var stateDir=Path.GetDirectoryName(options.StatePath);
             if(!string.IsNullOrWhiteSpace(stateDir)&&IpcClient.CanConnect(stateDir))
@@ -77,6 +76,9 @@ internal static class Program
             var window=new CenterWindow(store,commands);
             Log("window constructed");
             window.Closed+=(_,_)=>Log("window closed");
+            ipc?.OnStateUpdate += (_) => window.Dispatcher?.Invoke(window.Refresh);
+            ipc?.OnRegistryReload += () => window.Dispatcher?.Invoke(window.Refresh);
+            ipc?.OnReconnect += () => window.Dispatcher?.Invoke(window.Refresh);
             window.IsVisibleChanged+=(sender,eventArgs)=>
             {
                 if((bool)eventArgs.NewValue)

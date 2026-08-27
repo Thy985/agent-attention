@@ -290,18 +290,25 @@ describe('Registry v2 with Target', () => {
       }
     });
 
-    it('falls back to generic "agent" when no env var is set', () => {
+    it('uses anonymous fallback with warning when no AGENT_ID is set', () => {
       const original = process.env.AGENT_ID;
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
       try {
         delete process.env.AGENT_ID;
         delete process.env.AGENT_NAME;
         const id = autoDetectAndRegister();
-        expect(id).toBe('agent');
+        // Anonymous fallback — real agents must set AGENT_ID for stable identity
+        expect(id).toBe('anonymous');
+        // Warning must be emitted to alert about missing identity
+        expect(warnSpy).toHaveBeenCalled();
       } finally {
         if (original !== undefined) {
           process.env.AGENT_ID = original;
         }
+        warnSpy.mockRestore();
       }
     });
+
+
   });
 });

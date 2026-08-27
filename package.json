@@ -19,7 +19,8 @@
     "start:daemon": "node dist/daemon.js",
     "test:ui:harness": "dotnet run --project src/center/csharp/AgentAttention.UI.Harness/AgentAttention.UI.Harness.csproj -c Release --no-build",
     "verify:m1": "pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify-csharp-ui-m1.ps1",
-    "bin:agent": "node dist/daemon-cli.js"
+    "bin:agent": "node dist/daemon-cli.js",
+    "build:portable": "node scripts/build-portable.mjs"
   },
   "keywords": [
     "agent",
@@ -56,4 +57,3 @@
     "typescript": "^5.6.0"
   }
 }
-

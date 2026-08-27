@@ -35,7 +35,7 @@ function getRegistryPath(): string {
   );
 }
 
-function readRegistry(): AgentRegistry {
+export function readRegistry(): AgentRegistry {
   try {
     if (fs.existsSync(getRegistryPath())) {
       const raw = fs.readFileSync(getRegistryPath(), 'utf-8');
@@ -47,7 +47,7 @@ function readRegistry(): AgentRegistry {
   return { version: REGISTRY_VERSION, agents: [] };
 }
 
-function writeRegistry(registry: AgentRegistry): void {
+export function writeRegistry(registry: AgentRegistry): void {
   fs.mkdirSync(path.dirname(getRegistryPath()), { recursive: true });
   fs.writeFileSync(getRegistryPath(), JSON.stringify(registry, null, 2), 'utf-8');
 }
@@ -141,23 +141,34 @@ export function listAgents(): Agent[] {
 }
 
 /**
- * Auto-detect agent from environment and register if needed.
+ * Resolve the agent identity from environment and register if needed.
  * Returns agent_id (used for dedup and state recording).
  *
- * Per v0.3 spec §3 principle 2: Agent auto-discovery via process scanning
- * or env-guessing is prohibited. We only honor explicitly set AGENT_ID /
- * AGENT_NAME environment variables. No other detection happens here.
+ * Identity sources (in priority order):
+ * 1. AGENT_ID env var — Agent explicitly declares its identity.
+ *    This is the ONLY authoritative source. Runtime does NOT guess.
+ * 2. Anonymous fallback — emitted with a warning when AGENT_ID is missing.
+ *
+ * Per Agent Attention Integration Protocol v1:
+ * "Agent identity is declared by the Agent, never inferred by the Runtime."
  */
 export function autoDetectAndRegister(): string {
-  // Only honor explicitly-set environment variables — no guessing.
   const envAgentId = process.env.AGENT_ID;
   const envAgentName = process.env.AGENT_NAME;
 
+  // Explicit AGENT_ID — Agent declared identity, register silently
   if (envAgentId) {
     return registerAgent(envAgentId, envAgentName || envAgentId).agent_id;
   }
 
-  // No environment set — return generic fallback. The agent must self-register
-  // via `agent-attention agent register <id> <name>` to appear in the registry.
-  return registerAgent('agent', 'Agent').agent_id;
+  // No identity declared — anonymous fallback with warning
+  // Agents MUST set AGENT_ID for proper grouping in Center
+  const fallbackId = "anonymous";
+  console.warn(
+    "[agent-attention] WARNING: AGENT_ID not set. Using anonymous identity.\n" +
+    '  Run: agent-attention agent register <id> "<name>"\n' +
+    "  Or set AGENT_ID / AGENT_NAME environment variables.",
+  );
+  return registerAgent(fallbackId, "anonymous").agent_id;
 }
+

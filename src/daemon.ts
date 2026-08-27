@@ -8,6 +8,7 @@ import { readState } from './state/AttentionState';
 import { getUiMode, resolveNativeUiPath } from './ui-host';
 import { startPipeServer, pushStateToClients, stopPipeServer, emitNotification, watchRegistryForNotifications, registerRpcCommand } from './pipeline/ipc';
 import { dispatchCommand } from './commands';
+import { log } from './logging';
 
 export interface DaemonOptions {
   statePath: string;
@@ -24,6 +25,7 @@ export interface Daemon {
 
 const TRAY_STATE_POLL_MS = 1000;
 const PID_CHECK_INTERVAL_MS = 5000;
+const HEARTBEAT_INTERVAL_MS = 30_000;
 
 /** Replace a file atomically; readers see either the old complete file or the new one. */
 function atomicWriteFileSync(filePath: string, contents: string): void {
@@ -86,6 +88,41 @@ export function createDaemon(options: DaemonOptions): Daemon {
   const stateDir = path.dirname(options.statePath);
 
   const log = (msg: string) => daemonLog(msg, options.debug);
+
+  // AC-06: Periodic heartbeat log for observability
+  const startTime = Date.now();
+  let heartbeatTimer: NodeJS.Timeout | null = null;
+  const heartbeatLog = (entry: any): void => {
+    try {
+      const line = JSON.stringify(entry) + '\n';
+      getLogFile().write('[heartbeat] ' + line);
+    } catch {}
+    // Also write to unified runtime log for cross-component correlation
+    try {
+      log(entry);
+    } catch {}
+  };
+  const emitHeartbeat = (): void => {
+    if (stopped) return;
+    try {
+      const state = readState(options.statePath);
+      const uptimeMs = Date.now() - startTime;
+      const uptimeSec = Math.floor(uptimeMs / 1000);
+      const lastEvent = state.events[0] ? new Date(state.events[0].timestamp).toISOString() : 'never';
+      heartbeatLog({
+        component: 'daemon',
+        level: 'INFO',
+        event: 'heartbeat',
+        message: `uptime=${uptimeSec}s events=${state.events.length} unread=${state.unreadCount} lastEvent=${lastEvent}`,
+        context: { uptime_seconds: uptimeSec, event_count: state.events.length, unread_count: state.unreadCount, last_event_at: lastEvent },
+      });
+    } catch (err) {
+      heartbeatLog({ component: 'daemon', level: 'WARN', event: 'heartbeat_failed', message: String(err) });
+    }
+    heartbeatTimer = setTimeout(emitHeartbeat, HEARTBEAT_INTERVAL_MS);
+  };
+
+
 
   /** Compute a light hash of state so we only rewrite tray-state.json on real changes. */
   function stateHash(state: ReturnType<typeof readState>): string {
@@ -231,12 +268,14 @@ export function createDaemon(options: DaemonOptions): Daemon {
 
   // Periodic tray liveness check
   pidCheckTimer = setInterval(checkTrayAlive, PID_CHECK_INTERVAL_MS);
+    emitHeartbeat();
 
   return {
     stop: async () => {
       stopped = true;
       if (debounceTimer) clearTimeout(debounceTimer);
       if (pidCheckTimer) clearInterval(pidCheckTimer);
+    if (heartbeatTimer) { clearTimeout(heartbeatTimer); heartbeatTimer = null; }
       if (watcher) {
         await watcher.close();
         watcher = null;

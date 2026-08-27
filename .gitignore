@@ -15,3 +15,6 @@ src/center/csharp/**/obj/
 !.agent/state/*/*.json
 src/center/csharp/dist/
 *.tgz
+
+# Portable build output
+dist/portable/

@@ -6,7 +6,9 @@ import { shouldNotify } from './dedup';
 import { loadConfig } from './config';
 import { EventName, EVENT_PRIORITY } from './events';
 import { recordEvent } from './state';
+import { log, generateCorrelationId } from './logging';
 import { autoDetectAndRegister } from './registry';
+import { checkCompliance } from './discover';
 import * as os from 'os';
 import * as path from 'path';
 
@@ -74,11 +76,21 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
-  // Auto-detect and register agent (AC-02)
+  // Auto-detect and register agent (AC-02) — per-process stable id
   const agent = autoDetectAndRegister();
+  // Warn if still using anonymous identity (AGENT_ID was not set)
+  if (agent === 'anonymous') {
+    console.warn(
+      '[agent-attention] WARNING: running as anonymous agent. ' +
+      'Set AGENT_ID/AGENT_NAME env vars or run: agent-attention agent register <id> "<name>"',
+    );
+  }
 
   // Dedup check (best-effort) — AC-07: key includes agent+event+message
-  const dedupEnabled = shouldNotify(agent, eventName, message);
+  // Use machine-wide dedup id (hostname only) so dedup works across processes
+  // even when each process has a unique registration id (hostname-pid).
+  const { getDedupAgentId } = require('./dedup');
+  const dedupEnabled = shouldNotify(getDedupAgentId(), eventName, message);
   if (!dedupEnabled) {
     process.exit(0);
   }
@@ -91,6 +103,11 @@ async function main(): Promise<void> {
     // Daemon (if running) will simply not see this event until next one.
     try {
       const priority = EVENT_PRIORITY[eventName as EventName];
+      const correlationId = generateCorrelationId();
+      log({ component: 'cli', level: 'INFO', event: 'notify_called', message: `${eventName}: ${message.substring(0, 80)}`, correlation_id: correlationId, context: { agent_id: agent, event: eventName, priority } });
+      // AC-06: compliance tracking — log whether this notification follows the protocol
+      const compliant = checkCompliance(agent, eventName);
+      log({ component: 'cli', level: compliant ? 'INFO' : 'WARN', event: 'compliance_check', message: `${agent} notification ${eventName} is ${compliant ? 'valid' : 'unexpected'}`, correlation_id: correlationId, context: { agent_id: agent, event: eventName, priority, compliant } });
       recordEvent(STATE_PATH, {
         type: eventName as EventName,
         priority,
@@ -99,11 +116,13 @@ async function main(): Promise<void> {
         title: `${agent}: ${eventName}`,
         message,
         timestamp: Date.now(),
+        correlation_id: correlationId,
       });
     } catch (stateErr) {
       console.error(`State write failed (notification still succeeded): ${stateErr instanceof Error ? stateErr.message : String(stateErr)}`);
     }
 
+      log({ component: 'cli', level: 'INFO', event: 'exit_success', message: 'notification complete' });
     process.exit(0);
   } catch (err) {
     console.error(`Notification failed: ${err instanceof Error ? err.message : String(err)}`);

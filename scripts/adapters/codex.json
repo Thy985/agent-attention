@@ -1,0 +1,8 @@
+{
+  "id": "codex",
+  "name": "Codex",
+  "binaryPatterns": ["codex", "codex.exe"],
+  "skillPath": "~/.codex/skills",
+  "injectAgentId": true,
+  "description": "OpenAI Codex CLI agent"
+}

@@ -87,7 +87,7 @@ public sealed class TrayController : IDisposable
 
         UpdateIcon(state);
         UpdateMenu(state);
-        _notifyIcon.Visible=state.Visible||state.UnreadCount>0;
+        _notifyIcon.Visible=true;
     }
 
     /// <summary>M6a: reconnected after disconnect — rebuild full snapshot from state.json.</summary>
@@ -109,7 +109,7 @@ public sealed class TrayController : IDisposable
         _lastSignature=sig;
         UpdateIcon(state);
         UpdateMenu(state);
-        _notifyIcon.Visible=state.Visible||state.UnreadCount>0;
+        _notifyIcon.Visible=true;
     }
 
     private bool CheckLifecycle()

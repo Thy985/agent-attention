@@ -10,6 +10,10 @@
     <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- A3 D7: per-monitor DPI awareness so tray icon and Center window render sharply at 125%/150%/200% -->
+    <HighDpi>Enable</HighDpi>
+    <HighDpiMode>PerMonitorV2</HighDpiMode>
+    <EnableWindowsHighDpiAwareness>true</EnableWindowsHighDpiAwareness>
   </PropertyGroup>
 
 </Project>

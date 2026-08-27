@@ -1,4 +1,4 @@
-import * as fs from 'fs';
+﻿import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import {
@@ -35,7 +35,7 @@ describe('AttentionState', () => {
         updatedAt: expect.any(Number),
         unreadCount: 0,
         events: [],
-        visible: false,
+        visible: true,
       });
     });
 
@@ -573,10 +573,10 @@ describe('AttentionState', () => {
       expect(result.events).toEqual([]);
     });
 
-    // P2-2 regression: markAgentEventsRead must set `visible: false` when
+    // P2-2 regression: markAgentEventsRead keeps `visible: true` when daemon is running
     // ALL unread events are consumed — not when the events array still
     // has elements (events are kept on disk; only unread controls visibility).
-    it('hides tray icon (visible=false) when all unread events become read', () => {
+    it('shows tray icon (visible=true) even when all unread events become read', () => {
       recordEvent(statePath, {
         type: 'completed',
         message: 'x',
@@ -592,10 +592,10 @@ describe('AttentionState', () => {
 
       const result = markAgentEventsRead(statePath, 'claude');
       expect(result.unreadCount).toBe(0);
-      expect(result.visible).toBe(false); // ← was `events.length > 0` → always true
+      expect(result.visible).toBe(true); // daemon always shows tray icon when running
 
       s = readState(statePath);
-      expect(s.visible).toBe(false);
+      expect(s.visible).toBe(true);
     });
   });
 });

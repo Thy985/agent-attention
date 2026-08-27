@@ -3,6 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
+import { log } from '../logging';
 
 const AUTH_SECRET_PATH = 'ipc-auth.secret';
 import { readState } from '../state/AttentionState';
@@ -97,10 +98,10 @@ export function startPipeServer(stateDir: string): void {
               const msg = JSON.parse(raw);
               if (msg.type === 'hello' && msg.token === _state!.token) {
                 (socket as any).authorized = true;
-                console.log('[IPC] AUTH OK for', clientId, 'token match:', msg.token === _state!.token);
+                log({ component: 'ipc', level: 'INFO', event: 'auth_ok', message: 'IPC auth successful', context: { client: clientId } });
                 return;
               }
-              console.log('[IPC] AUTH FAIL for', clientId, 'server_token=', _state!.token?.substring(0,8), 'received_token=', msg.token?.substring(0,8));
+              log({ component: 'ipc', level: 'ERROR', event: 'auth_failed', message: 'IPC auth rejected', context: { client: clientId } });
               daemonLog(`ipc unauthorized connection from ${clientId}`);
               // Send auth-rejected before destroy so client can detect rejection
               try {

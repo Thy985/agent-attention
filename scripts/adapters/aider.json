@@ -1,0 +1,8 @@
+{
+  "id": "aider",
+  "name": "Aider",
+  "binaryPatterns": ["aider", "aider.exe"],
+  "skillPath": null,
+  "injectAgentId": false,
+  "description": "Aider AI pair programming tool"
+}

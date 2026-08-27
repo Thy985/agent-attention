@@ -76,6 +76,15 @@ function writeLog(log: DedupLog): void {
  * invocation still has its own in-memory cache for fast path; only the first
  * call within the process and the periodic eviction sync to disk.
  */
+/**
+ * Machine-wide stable id for deduplication. Uses hostname (not pid) so that
+ * all processes on the same machine share the same dedup namespace.
+ * Registration ids (hostname-pid) remain per-process; only dedup is machine-wide.
+ */
+export function getDedupAgentId(): string {
+  return require('os').hostname();
+}
+
 export function shouldNotify(agent: string, event: string, message: string): boolean {
   const now = Date.now();
   const key = makeKey(agent, event, message);

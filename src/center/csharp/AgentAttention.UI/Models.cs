@@ -49,6 +49,32 @@ public sealed class AgentTarget
     [JsonPropertyName("pid")] public int Pid { get; set; }
 }
 
+/// <summary>
+/// Aggregated agent summary combining registry info + unread event count.
+/// Used in the Center window's agent overview section.
+/// </summary>
+public sealed class AgentSummary
+{
+    public string AgentId { get; set; } = string.Empty;
+    public string Name { get; set; } = string.Empty;
+    public long LastSeenAt { get; set; }
+    public int UnreadCount { get; set; }
+    public bool HasTarget => Target is { Pid: > 0 };
+    public AgentTarget? Target { get; set; }
+
+    /// <summary>Relative time string, e.g. "5m ago" or "just now".</summary>
+    public string LastActiveAge => FormatAge(LastSeenAt);
+
+    private static string FormatAge(long timestampMs)
+    {
+        var elapsed = DateTimeOffset.Now.ToUnixTimeMilliseconds() - timestampMs;
+        if (elapsed < 60_000) return "just now";
+        if (elapsed < 3_600_000) return $"{elapsed / 60_000}m ago";
+        if (elapsed < 86_400_000) return $"{elapsed / 3_600_000}h ago";
+        return $"{elapsed / 86_400_000}d ago";
+    }
+}
+
 internal static class Json
 {
     public static readonly JsonSerializerOptions Options = new()

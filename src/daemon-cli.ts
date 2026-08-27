@@ -1,9 +1,11 @@
-#!/usr/bin/env node
+﻿#!/usr/bin/env node
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { execSync, spawn } from 'child_process';
-import { registerAgent, listAgents, getAgent, updateAgentTarget, AgentTarget } from './registry';
+import { registerAgent, listAgents, getAgent, updateAgentTarget, AgentTarget, type Agent } from './registry';
+import { readLogs, findCorrelated, wipeLog } from './logging';
+import { loadAdapters, discoverInstalled, getIntegratedAgents, integrateAgent, isIntegrated } from './discover';
 import { clearUnread, markRead } from './state/AttentionState';
 import { resolveNativeUiPath } from './ui-host';
 
@@ -24,6 +26,9 @@ function runPs(script: string, timeoutMs = 5000): string {
  *  Excludes the current process to avoid self-matching. */
 function getPsPids(pattern: string, excludeSelf = true): number[] {
   try {
+    // A6 D18: validate pattern to prevent shell injection.
+    // Invariant: no untrusted value may be interpolated into shell source.
+    if (!/^[a-zA-Z0-9._-]+$/.test(pattern)) return [];
     const selfPid = excludeSelf ? String(process.pid) : '';
     const out = runPs(
       'get-ciminstance win32_process | where-object { $_.name -eq ' +
@@ -209,6 +214,58 @@ function killExistingDaemon(): void {
   }
 }
 
+
+/**
+ * Register the Windows startup hook (VBS script) so the daemon auto-restarts on login.
+ * A2 D5: ensures crash recovery — if daemon dies mid-session, next login re-registers and starts it.
+ * Idempotent: overwrites existing .vbs with absolute paths so it survives upgrades.
+ */
+function registerStartupHook(): void {
+  const STARTUP_DIR = path.join(
+    process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'),
+    'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup',
+  );
+  const vbsPath = path.join(STARTUP_DIR, 'agent-attention.vbs');
+  const distDaemon = path.join(__dirname, '..', 'dist', 'daemon.js');
+  try {
+    if (!fs.existsSync(distDaemon)) return;
+    const nodeExe  = process.execPath;
+    const escapedNode     = nodeExe.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    const escapedDaemon = distDaemon.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    const vbsContent = [
+      'Set WshShell = CreateObject("WScript.Shell")',
+      `WshShell.Run Chr(34) & "${escapedNode}" & Chr(34) & " " & Chr(34) & "${escapedDaemon}" & Chr(34), 0, False`,
+    ].join('\n');
+    fs.writeFileSync(vbsPath, vbsContent, 'utf-8');
+    console.log(`Startup hook registered: ${vbsPath}`);
+  } catch (err) {
+    console.warn(`Failed to register startup hook: ${err}`);
+  }
+}
+
+/**
+ * C1: Show a one-time system notification on first daemon launch.
+ * Tells the user about the tray icon and how to open the Center window.
+ * Uses node-notifier (already a dependency) to send a Windows Toast.
+ */
+function showFirstLaunchNotification(): void {
+  const flagPath = path.join(os.homedir(), '.agent-attention', '.first-launch-done');
+  if (fs.existsSync(flagPath)) return; // already notified
+  try {
+    const notifier = require('node-notifier');
+    notifier.notify({
+      title: 'Agent Attention',
+      message: 'Agent Attention is running in the system tray. Click the icon to open the Center, or double-click to mark all read.',
+      sound: false,
+      wait: false,
+      timeout: 5,
+    });
+    fs.writeFileSync(flagPath, new Date().toISOString(), 'utf-8');
+    console.log('First-launch notification sent.');
+  } catch (err) {
+    console.warn(`First-launch notification failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
 function startDaemon(): void {
   // Always clean up stale tray processes first — they may belong to a
   // crashed or previously-stopped daemon whose PID file was already removed.
@@ -274,6 +331,8 @@ function startDaemon(): void {
   daemon.unref();
   writePid(daemon.pid!);
   console.log(`Daemon started (pid=${daemon.pid})`);
+  registerStartupHook(); // A2 D5: ensure crash-recovery hook is active after every start
+  showFirstLaunchNotification(); // C1: one-time system notification on first daemon start
 }
 
 /**
@@ -491,7 +550,40 @@ function doctor(): void {
   }
 
   console.log('');
-  console.log(allOk ? 'All checks passed!' : 'Some checks failed. Run agent-attention daemon restart to fix.');
+  
+  // Runtime log diagnostics
+  const logPath = path.join(os.homedir(), '.agent-attention', 'logs', 'runtime.jsonl');
+  console.log('');
+  console.log('Runtime Log:');
+  if (fs.existsSync(logPath)) {
+    try {
+      const content = fs.readFileSync(logPath, 'utf-8');
+      const lines = content.split('\n').filter((l: string) => l.trim());
+      const entries = lines.map((l: string) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+      if (entries.length === 0) {
+        console.log('  (empty)');
+      } else {
+        const errors = entries.filter((e: any) => e.level === 'ERROR' || e.level === 'FATAL');
+        const warns = entries.filter((e: any) => e.level === 'WARN');
+        const recent = entries.slice(-5);
+        console.log('  ' + entries.length + ' entries total');
+        if (errors.length > 0) console.log('  ' + errors.length + ' error(s)');
+        if (warns.length > 0) console.log('  ' + warns.length + ' warning(s)');
+        console.log('  Recent:');
+        for (const entry of recent) {
+          const time = new Date(entry.timestamp).toLocaleTimeString();
+          console.log('    [' + time + '] [' + entry.level + '] [' + entry.component + '] ' + entry.event + ': ' + entry.message);
+        }
+        console.log('  See all: agent-attention logs ' + Math.min(entries.length, 20));
+      }
+    } catch {
+      console.log('  (read error)');
+    }
+  } else {
+    console.log('  (no runtime log yet - first notification will create it)');
+  }
+
+console.log(allOk ? 'All checks passed!' : 'Some checks failed. Run agent-attention daemon restart to fix.');
 }
 
 function markAllRead(): void {
@@ -501,6 +593,50 @@ function markAllRead(): void {
   }
   clearUnread(STATE_PATH);
   console.log('All events marked as read.');
+}
+
+/** Print the last N lines of the daemon log. */
+function logs(n: number = 50, extraArgs: string[] = []): void {
+  // Also support --correlation <id> to filter by correlation ID
+  const args = extraArgs.length > 0 ? extraArgs : process.argv.slice(2);
+  // Parse --correlation FIRST (before consuming n), so `logs --correlation xxx` works
+  const corrIdx = args.indexOf('--correlation');
+  let correlationId: string | undefined;
+  if (corrIdx >= 0 && args[corrIdx + 1]) {
+    correlationId = args[corrIdx + 1];
+  }
+
+  if (correlationId) {
+    const entries = findCorrelated(correlationId);
+    if (entries.length === 0) {
+      console.log(`No log entries found for correlation ID: ${correlationId}`);
+      return;
+    }
+    console.log(`Correlation chain [${correlationId}]: ${entries.length} entries`);
+    console.log('');
+    for (const entry of entries) {
+      const time = new Date(entry.timestamp).toLocaleTimeString();
+      console.log(`[${time}] [${entry.level}] [${entry.component}] ${entry.event}: ${entry.message}`);
+      if (entry.context) {
+        for (const [k, v] of Object.entries(entry.context)) {
+          console.log(`  ${k}: ${JSON.stringify(v)}`);
+        }
+      }
+    }
+    return;
+  }
+
+  // Read the unified runtime JSONL log
+  const entries = readLogs(n);
+  if (entries.length === 0) {
+    console.log('No log entries found.');
+    return;
+  }
+  for (const entry of entries) {
+    const time = new Date(entry.timestamp).toLocaleTimeString();
+    const corr = entry.correlation_id ? ` [${entry.correlation_id.substring(0, 12)}]` : '';
+    console.log(`[${time}] [${entry.level.padEnd(5)}] [${entry.component.padEnd(8)}] ${entry.event}${corr}: ${entry.message}`);
+  }
 }
 
 function markEvent(eventId: string): void {
@@ -524,10 +660,28 @@ function printAgents(): void {
     const targetInfo = agent.target
       ? `target=terminal:pid=${agent.target.pid}`
       : 'target=(none)';
-    console.log(`  ${agent.agent_id} (${agent.name})`);
+    const shortId = agent.agent_id.length > 24
+      ? agent.agent_id.slice(0, 20) + '...'
+      : agent.agent_id;
+    console.log(`  [${shortId}] ${agent.name}`);
     console.log(`    registered_at: ${new Date(agent.registered_at).toISOString()}`);
     console.log(`    last_seen_at:  ${new Date(agent.last_seen_at).toISOString()}`);
     console.log(`    ${targetInfo}`);
+  }
+}
+
+function cleanupAgents(): void {
+  const { readRegistry, writeRegistry } = require('./registry');
+  const registry = readRegistry();
+  const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  const before = registry.agents.length;
+  registry.agents = registry.agents.filter((a: Agent) => a.last_seen_at > cutoff);
+  const removed = before - registry.agents.length;
+  if (removed > 0) {
+    writeRegistry(registry);
+    console.log(`Removed ${removed} stale agent(s) (no activity in 7 days). ${registry.agents.length} remaining.`);
+  } else {
+    console.log(`No stale agents to remove. ${registry.agents.length} agent(s) registered.`);
   }
 }
 
@@ -568,6 +722,128 @@ function jumpToAgent(agentId: string): void {
 }
 
 // CLI entry point
+
+/**
+ * Guided setup flow for first-time users.
+ */
+
+/** Discover agents installed on PATH. */
+function runDiscover(): void {
+  const adapters = loadAdapters();
+  const installed = discoverInstalled(adapters);
+  const integrated = getIntegratedAgents();
+
+  console.log('Agent Attention -- Discovery');
+  console.log('');
+
+  if (adapters.length === 0) {
+    console.log('No agent adapters registered.');
+    return;
+  }
+
+  console.log('Scanning PATH for known agents...');
+  console.log('');
+
+  for (const adapter of adapters) {
+    const isFound = installed.includes(adapter.id);
+    const isInt = integrated.includes(adapter.id);
+    const status = isInt ? '[x] Integrated' : isFound ? '[ ] Found' : '[ ] Not found';
+    console.log('  ' + adapter.name.padEnd(20) + status);
+    if (isFound && !isInt) {
+      console.log('    ID: ' + adapter.id + '  Binary: ' + adapter.binaryPatterns.join(', '));
+    }
+  }
+
+  console.log('');
+  const pending = installed.filter(id => !isIntegrated(id));
+  if (pending.length > 0) {
+    console.log('Agents found but not integrated: ' + pending.join(', '));
+    console.log('  Run: agent-attention integrate <id>');
+  } else if (installed.length === 0) {
+    console.log('No known agents found on PATH.');
+    console.log('  Install Claude Code, Codex, or Aider to enable integration.');
+  } else {
+    console.log('All found agents are already integrated.');
+  }
+}
+
+/** Integrate a discovered agent: register + configure. */
+function runIntegrate(agentId: string): void {
+  const adapters = loadAdapters();
+  const adapter = adapters.find(a => a.id === agentId);
+  if (!adapter) {
+    console.error('Unknown agent: ' + agentId);
+    console.error('Run: agent-attention discover');
+    process.exit(1);
+  }
+  if (isIntegrated(agentId)) {
+    console.log(agentId + ' is already integrated.');
+    return;
+  }
+
+  // Register agent in agents.json
+  registerAgent(agentId, adapter.name);
+  // Record integration
+  integrateAgent(adapter);
+
+  console.log('Integrated: ' + adapter.name + ' (' + agentId + ')');
+  console.log('');
+  console.log('Next step: set AGENT_ID in your shell config:');
+  if (adapter.injectAgentId) {
+    console.log('  export AGENT_ID=' + agentId);
+    console.log('  export AGENT_NAME="' + adapter.name + '"');
+  } else {
+    console.log('  export AGENT_ID=' + agentId);
+  }
+}
+
+function runSetup(): void {
+  console.log('Agent Attention -- Setup');
+  console.log('');
+  const status = getStatus();
+  if (status.running) {
+    console.log('[OK]  Daemon running (pid=' + status.pid + ')');
+  } else {
+    console.log('[--]  Daemon not running');
+    console.log('      Run: agent-attention daemon start');
+  }
+  console.log('');
+  const agents = listAgents();
+  if (agents.length === 0) {
+    console.log('[--]  No agents registered');
+    console.log('      Register one:');
+    console.log('      agent-attention agent register claude-code "Claude Code"');
+  } else {
+    console.log('[OK]  ' + agents.length + ' agent(s) registered');
+    for (const a of agents) {
+      console.log('      ' + a.agent_id + '  ' + a.name);
+    }
+  }
+  console.log('');
+  const statePath = path.join(STATE_DIR, 'state.json');
+  if (fs.existsSync(statePath)) {
+    try {
+      const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+      console.log('Events: ' + (state.events ? state.events.length : 0) + ' total, ' + state.unreadCount + ' unread');
+    } catch {}
+  }
+  console.log('');
+  if (!status.running) {
+    console.log('Next: agent-attention daemon start');
+  } else if (agents.length === 0) {
+    console.log('Next: agent-attention agent register <id> "<name>"');
+  } else {
+    console.log('Next: AGENT_ID=' + agents[0].agent_id + ' agent-notify completed "test"');
+  }
+}
+
+
+/** Wipe the runtime log file (for testing). */
+function wipeLogs(): void {
+  wipeLog();
+  console.log('Runtime log wiped.');
+}
+
 function main(): void {
   const args = process.argv.slice(2);
   const command = args[0];
@@ -586,17 +862,27 @@ function main(): void {
     console.log('  jump <agent-id>  Focus the terminal target of an agent');
     console.log('  agent register <id> <name>  Register an agent');
     console.log('  agent list                           List all agents');
+    console.log('  agent cleanup                        Remove agents inactive for 7+ days');
     console.log('  agent target set <id> --pid <n>      Set target terminal pid');
     console.log('  agent target clear <id>              Clear target');
+    console.log('  logs [n]         Show last N lines of daemon log');
     console.log('  doctor           Run health checks');
+    console.log('  setup            Quick setup: install daemon + register agent');
+    console.log('  discover         Scan PATH for installed agents');
+    console.log('  integrate <id>   Enable integration for a discovered agent');
     process.exit(0);
   }
+
+  if (command === 'setup') { runSetup(); return; }
+  if (command === 'discover') { runDiscover(); return; }
+  if (command === 'integrate') { runIntegrate(args[1] || ''); return; }
 
   if (command === 'daemon') {
     if (!subcommand) {
       console.log('Usage: agent-attention daemon <start|stop|restart|status>');
       process.exit(1);
     }
+    if (subcommand === 'wipe') { wipeLogs(); return; }
     switch (subcommand) {
       case 'start': startDaemon(); break;
       case 'stop': stopDaemon(); break;
@@ -615,6 +901,24 @@ function main(): void {
       process.exit(1);
     }
     markEvent(eventId);
+  } else if (command === 'logs') {
+    // Handle: logs [--correlation <id>] [n]
+    // Check --correlation FIRST before parsing n, so `logs --correlation xxx` works
+    const corrIdx2 = args.indexOf('--correlation');
+    if (corrIdx2 >= 0) {
+      const corrVal = args[corrIdx2 + 1];
+      const numArg = args[0] !== '--correlation' ? args[0] : undefined;
+      const n2 = numArg ? parseInt(numArg, 10) : 50;
+      if (!isNaN(n2) && n2 > 0) {
+        logs(n2, args.slice(1));
+      } else {
+        logs(50, args.slice(1));
+      }
+    } else {
+      const n = args[1] ? parseInt(args[1], 10) : 50;
+      if (args[1] && isNaN(n)) { console.log('Usage: agent-attention logs [n]'); process.exit(1); }
+      logs(n, args.slice(2));
+    }
   } else if (command === 'doctor') {
     doctor();
   } else if (command === 'jump') {
@@ -644,6 +948,9 @@ function main(): void {
       console.log(`Registered agent: ${agent.agent_id} (${agent.name})`);
     } else if (sub1 === 'list') {
       printAgents();
+    } else if (sub1 === 'cleanup') {
+      cleanupAgents();
+    } else if (sub1 === 'target') {
     } else if (sub1 === 'target') {
       if (!sub2) {
         console.log('Usage: agent-attention agent target <set|clear> <id> [--pid <n>]');
