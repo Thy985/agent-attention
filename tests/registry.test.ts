@@ -12,7 +12,7 @@ import {
 } from '../src/registry';
 import { recordEvent, readState } from '../src/state/AttentionState';
 
-describe('Registry v2 with Target', () => {
+describe('Registry v3 with Target', () => {
   let tmpHome: string;
 
   beforeEach(() => {
@@ -63,8 +63,8 @@ describe('Registry v2 with Target', () => {
     });
   });
 
-  describe('v1 → v2 backward compatibility', () => {
-    it('v1 registry (no target field) loads and migrates to v2 on write', () => {
+  describe('v1 → v3 backward compatibility', () => {
+    it('v1 registry (no target field) loads and migrates to v3 on write', () => {
       withTempRegistry(() => {
         const realPath = path.join(tmpHome, 'agents.json');
         // Simulate a v1 registry file (no target field, version 1)
@@ -87,7 +87,7 @@ describe('Registry v2 with Target', () => {
 
         // Read back and verify migration happened
         const restored = JSON.parse(fs.readFileSync(realPath, 'utf-8'));
-        expect(restored.version).toBe(2);
+        expect(restored.version).toBe(3);
         expect(restored.agents).toHaveLength(2);
 
         // Original agent should have been migrated (target added)

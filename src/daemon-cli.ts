@@ -3,9 +3,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { execSync, spawn } from 'child_process';
-import { registerAgent, listAgents, getAgent, updateAgentTarget, AgentTarget, type Agent } from './registry';
+import { registerAgent, listAgents, getAgent, updateAgentTarget, AgentTarget, type Agent, readRegistry, writeRegistry } from './registry';
 import { readLogs, findCorrelated, wipeLog } from './logging';
-import { loadAdapters, discoverInstalled, getIntegratedAgents, integrateAgent, isIntegrated } from './discover';
+import { loadAdapters, discoverInstalled, type AgentAdapter } from './discover';
 import { clearUnread, markRead } from './state/AttentionState';
 import { resolveNativeUiPath } from './ui-host';
 
@@ -671,7 +671,6 @@ function printAgents(): void {
 }
 
 function cleanupAgents(): void {
-  const { readRegistry, writeRegistry } = require('./registry');
   const registry = readRegistry();
   const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
   const before = registry.agents.length;
@@ -731,7 +730,13 @@ function jumpToAgent(agentId: string): void {
 function runDiscover(): void {
   const adapters = loadAdapters();
   const installed = discoverInstalled(adapters);
-  const integrated = getIntegratedAgents();
+
+  // 'Integrated' sources from registry's integration field, not a
+  // separate integrations.json (folded into agents.json v3).
+  const registry = readRegistry();
+  const integratedIds = registry.agents
+    .filter((a) => a.integration === 'adapter')
+    .map((a) => a.agent_id);
 
   console.log('Agent Attention -- Discovery');
   console.log('');
@@ -746,7 +751,7 @@ function runDiscover(): void {
 
   for (const adapter of adapters) {
     const isFound = installed.includes(adapter.id);
-    const isInt = integrated.includes(adapter.id);
+    const isInt = integratedIds.includes(adapter.id);
     const status = isInt ? '[x] Integrated' : isFound ? '[ ] Found' : '[ ] Not found';
     console.log('  ' + adapter.name.padEnd(20) + status);
     if (isFound && !isInt) {
@@ -755,40 +760,95 @@ function runDiscover(): void {
   }
 
   console.log('');
-  const pending = installed.filter(id => !isIntegrated(id));
+  const pending = installed.filter((id) => !integratedIds.includes(id));
   if (pending.length > 0) {
-    console.log('Agents found but not integrated: ' + pending.join(', '));
-    console.log('  Run: agent-attention integrate <id>');
+    console.log('Agents found but not yet integrated: ' + pending.join(', '));
+    console.log('  Run: agent-attention integrate <id>   (installs Skill + prints register command)');
   } else if (installed.length === 0) {
     console.log('No known agents found on PATH.');
     console.log('  Install Claude Code, Codex, or Aider to enable integration.');
+    console.log('  Or self-register any Agent: agent-attention agent register <id> "<name>"');
   } else {
     console.log('All found agents are already integrated.');
   }
 }
 
-/** Integrate a discovered agent: register + configure. */
+function findBinaryOnPath(adapter: AgentAdapter): string | null {
+  const pathEnv = process.env.PATH || '';
+  const pathDirs = pathEnv.split(path.delimiter);
+  for (const pattern of adapter.binaryPatterns) {
+    for (const dir of pathDirs) {
+      const candidate = path.join(dir, pattern);
+      try {
+        fs.accessSync(candidate, fs.constants.X_OK);
+        return candidate;
+      } catch {}
+    }
+  }
+  return null;
+}
+
+function installAdapterSkill(adapter: AgentAdapter): string | null {
+  if (!adapter.skillPath) return null;
+  const resolved = adapter.skillPath
+    .replace(/^~(?=[\\\\\/]|$)/, os.homedir())
+    .replace(/^~/, os.homedir());
+  const source = path.join(__dirname, '..', 'skills', 'agent-attention', 'skill.md');
+  if (!fs.existsSync(source)) return null;
+  const dest = path.join(resolved, 'agent-attention', 'skill.md');
+  try {
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.copyFileSync(source, dest);
+    return dest;
+  } catch (err) {
+    console.warn('Failed to install skill: ' + err);
+    return null;
+  }
+}
+
+/**
+ * Run adapter-specific bootstrap for an Agent. Does NOT register the Agent.
+ * Registration is the Agent's responsibility via 'agent register'.
+ *
+ * Idempotent: safe to re-run; only installs Skill files when missing.
+ */
 function runIntegrate(agentId: string): void {
   const adapters = loadAdapters();
-  const adapter = adapters.find(a => a.id === agentId);
+  const adapter = adapters.find((a) => a.id === agentId);
   if (!adapter) {
-    console.error('Unknown agent: ' + agentId);
-    console.error('Run: agent-attention discover');
+    console.error('Unknown adapter: ' + agentId);
+    console.error('Available: ' + (adapters.length === 0 ? '(none)' : adapters.map((a) => a.id).join(', ')));
+    console.error('You can still self-register without an adapter:');
+    console.error('  agent-attention agent register <id> "<name>"');
     process.exit(1);
   }
-  if (isIntegrated(agentId)) {
-    console.log(agentId + ' is already integrated.');
-    return;
-  }
 
-  // Register agent in agents.json
-  registerAgent(agentId, adapter.name);
-  // Record integration
-  integrateAgent(adapter);
+  const installedBinary = findBinaryOnPath(adapter);
+  const skillInstalled = installAdapterSkill(adapter);
 
-  console.log('Integrated: ' + adapter.name + ' (' + agentId + ')');
+  console.log('Adapter bootstrap for: ' + adapter.name + ' (' + agentId + ')');
   console.log('');
-  console.log('Next step: set AGENT_ID in your shell config:');
+  if (installedBinary) {
+    console.log('  [OK] binary found: ' + installedBinary);
+  } else {
+    console.log('  [--] binary not found on PATH (searched: ' + adapter.binaryPatterns.join(', ') + ')');
+  }
+  if (skillInstalled) {
+    console.log('  [OK] skill installed at: ' + skillInstalled);
+  } else if (adapter.skillPath) {
+    console.log('  [--] skill not installed (no skillPath declared by adapter)');
+  } else {
+    console.log('  [--] adapter declares no skillPath');
+  }
+  console.log('');
+  console.log('Next step: have the Agent itself run register:');
+  console.log('  agent-attention agent register ' + agentId + ' "' + adapter.name + '" \\');
+  if (installedBinary) {
+    console.log('    --binary "' + installedBinary + '" \\');
+  }
+  console.log('    --integration adapter');
+  console.log('');
+  console.log('Or set AGENT_ID in the Agent shell before calling agent-notify:');
   if (adapter.injectAgentId) {
     console.log('  export AGENT_ID=' + agentId);
     console.log('  export AGENT_NAME="' + adapter.name + '"');
@@ -796,7 +856,6 @@ function runIntegrate(agentId: string): void {
     console.log('  export AGENT_ID=' + agentId);
   }
 }
-
 function runSetup(): void {
   console.log('Agent Attention -- Setup');
   console.log('');
@@ -940,12 +999,25 @@ function main(): void {
     if (sub1 === 'register') {
       const id = args[2];
       const name = args[3];
+      const binaryIdx = args.indexOf('--binary', 4);
+      const integrationIdx = args.indexOf('--integration', 4);
+      const binary = binaryIdx >= 0 ? args[binaryIdx + 1] : undefined;
+      const integration = integrationIdx >= 0 ? args[integrationIdx + 1] : undefined;
       if (!id || !name) {
-        console.log('Usage: agent-attention agent register <id> <name>');
+        console.log('Usage: agent-attention agent register <id> <name> [--binary <path>] [--integration skill|adapter|none]');
         process.exit(1);
       }
-      const agent = registerAgent(id, name);
-      console.log(`Registered agent: ${agent.agent_id} (${agent.name})`);
+      if (integration && !['skill', 'adapter', 'none'].includes(integration)) {
+        console.error('Invalid --integration: ' + integration + '. Must be: skill, adapter, or none');
+        process.exit(1);
+      }
+      const agent = registerAgent(id, name, {
+        binary: binary || null,
+        integration: integration as import('./registry').IntegrationMode | undefined,
+      });
+      const modeLabel = agent.integration === 'adapter' ? '[adapter]' : agent.integration === 'skill' ? '[skill]' : '[none]';
+      console.log(`Registered agent: ${agent.agent_id} (${agent.name}) ${modeLabel}`);
+      if (agent.binary) console.log(`  binary: ${agent.binary}`);
     } else if (sub1 === 'list') {
       printAgents();
     } else if (sub1 === 'cleanup') {
@@ -995,3 +1067,4 @@ function main(): void {
 }
 
 main();
+

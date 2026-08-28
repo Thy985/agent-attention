@@ -20,7 +20,14 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
-const TELEMETRY_PATH = path.join(os.homedir(), '.agent-attention', 'telemetry.json');
+function getTelemetryPath(): string {
+  return path.join(
+    process.env.AGENT_ATTENTION_HOME || os.homedir(),
+    '.agent-attention',
+    'telemetry.json',
+  );
+}
+const TELEMETRY_PATH = getTelemetryPath();
 
 interface TelemetrySnapshot {
   crashes: number;
