@@ -6,7 +6,7 @@ Windows notification infrastructure for AI Agents. Agents call `agent-notify`; y
 Agent → agent-notify → daemon → Toast + Sound + Tray Icon + Center
 ```
 
-## Quick Start (4 commands)
+## Quick Start (5 commands)
 
 ```bash
 # 1. Install
@@ -15,14 +15,17 @@ npm install -g agent-attention    # OR from source: npm install && npm run build
 # 2. Verify everything works
 agent-attention doctor
 
-# 3. Find and enable your agents
-agent-attention discover
-agent-attention integrate claude-code
+# 3. Check integration capabilities
+agent-attention integration list
 
-# 4. Install Claude Code hooks (auto-notifies on session end)
-agent-attention hook install     # installs to current project's .claude/hooks.json
-# OR for global install across all projects:
-agent-attention hook install --global
+# 4. Install agent integration
+agent-attention integration install claude-code
+# OR for other agents:
+# agent-attention integration install codex   (wrapper)
+# agent-attention integration install aider   (wrapper)
+
+# 5. Start the daemon
+agent-attention daemon start
 ```
 
 That's it. Now set `AGENT_ID` in your agent's environment and start sending notifications:
@@ -38,9 +41,14 @@ Or let the hooks handle it — when Claude Code exits, it automatically fires
 ## Commands
 
 ```bash
+# Integration management (v0.3)
+agent-attention integration list          # Show all agents and their integration levels
+agent-attention integration status <id>   # Check integration status for an agent
+agent-attention integration install <id>  # Install integration (hook/wrapper/skill)
+agent-attention integration uninstall <id> # Remove integration
+
 # Setup & discovery
 agent-attention discover          # Scan PATH for installed agents
-agent-attention integrate <id>    # Enable integration (registers agent + writes config)
 agent-attention setup             # Status overview + next steps
 
 # Daemon control
@@ -86,11 +94,30 @@ agent-attention logs --correlation corr_xxx
 ```
 ~/.agent-attention/
 ├── agents.json          # Registered agents (stable identity)
-├── integrations.json    # Agent integration config
 ├── state.json           # Recent events (last 20)
+├── dedup.json           # Deduplication cache (30s TTL)
 ├── logs/runtime.jsonl   # Unified observability log
 ├── daemon.pid           # Daemon PID
 └── ipc-port.txt         # IPC port for UI ↔ daemon
+
+Integration Catalog:
+scripts/integrations/*.json  # Agent capability manifests (L0-L7)
+
+Startup hook:
+%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\agent-attention.vbs
+```
+
+## Integration Levels
+
+| Level | Mechanism | Reliability | Example Agents |
+|-------|-----------|-------------|----------------|
+| L0 | Manual CLI | ○ Manual | Unknown agents |
+| L1 | Skill | △ Best-effort | Continue (IDE) |
+| L2 | Wrapper | △ Probable | Codex, Aider |
+| L3 | Hook | ✓ Verified | Claude Code, Cline |
+| L4 | Plugin | △ Probable | OpenCode |
+
+See [AGENT_CAPABILITY_MATRIX.md](docs/AGENT_CAPABILITY_MATRIX.md) for full details.
 
 Startup hook:
 %APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\agent-attention.vbs
