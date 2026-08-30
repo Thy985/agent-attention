@@ -154,6 +154,7 @@
 
 | # | 修法 | 验证 |
 |---|---|---|
+| P2-12 | `notify()` 增加硬性超时保护：`Promise.race` 风格的 `done()` + `setTimeout(hardTimeout)`，默认 30s，`AGENT_ATTENTION_NOTIFY_TIMEOUT_MS` 可覆盖；`agent-notify` 进程永不在 toast 交互上无限挂起（node-notifier 的 wait/timeout 在 Windows 被 toaster 标志过滤，无法自限时） | L1：jest mock node-notifier 永不回调，`notify()` 100/50/25ms 超时均按时返回（<2s）；L2：实机 `agent-notify` 2.5s 返回 exit=0 事件落盘 |
 | P3-6 | `doctor` Sound/Toast 文案修正：snoretoast → node-notifier；Sound 改为依赖 daemon 运行状态而非单纯 platform 判断 | L2：`agent-attention doctor` 输出准确 |
 | P3-8 | `writeRegistry` 改用原子写（tmp + rename），与 `AttentionState.atomicWrite` 一致 | L1：源码断言 PASS |
 | P3-10 | `autoDetectAndRegister` 返回值改为 `{agentId, agentName}` 对象，`index.ts` / `hooks.ts` / `daemon-cli.ts` 全部接入，事件记录时 `agent_name` 正确写入 | L2：hook E2E 验证 `agent_name: claude-code` 正确落盘 |
@@ -169,9 +170,11 @@
 - **P2-9~P2-13** → C# 无对应代码
 - **P3-1~P3-5** → PowerShell 时代 bug，已随迁移消失
 
-### 验证汇总（2026-08-30，P3 修复轮）
+### 验证汇总（2026-08-30，P3+P2-12 修复轮）
 
-- Jest 单测：**198/198 PASS**（25 suites，连续稳定）
+- Jest 单测：**204/204 PASS**（26 suites，连续稳定）
+- P2-12 回归：`tests/p2-12-timeout.test.ts` 6/6（mock node-notifier 永不回调，超时保护按时返回）
+- P2-12 实机 E2E：`AGENT_ATTENTION_NOTIFY_TIMEOUT_MS=2000 node dist/index.js completed "..."` → 2.5s 返回，exit=0，事件正确落盘
 - Hook E2E：`echo '{"sessionId":"test123","exitStatus":0,"turns":5}' \| node dist/daemon-cli.js hook` → state.json `agent_id=claude-code, agent_name=anonymous`（无 AGENT_ID 时正确回退）
 - `agent-attention integration list`：6 agent 正常显示
 - `agent-attention integration status claude-code`：L3 hook verified ✓
