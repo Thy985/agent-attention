@@ -1,0 +1,30 @@
+{
+  "id": "claude-code",
+  "name": "Claude Code",
+  "description": "Anthropic's agentic coding CLI with comprehensive hook system",
+  "binaryPatterns": ["claude", "claude.exe"],
+  "installPaths": [
+    "~/.claude",
+    "%APPDATA%\\Claude"
+  ],
+  "level": 3,
+  "mechanism": "hook",
+  "interfaces": {
+    "hook": ["SessionStart", "Stop", "StopFailure", "PostToolUse", "PreToolUse", "UserPromptSubmit", "PermissionRequest", "SubagentStart", "SubagentStop", "PostCompact", "TeammateIdle"],
+    "env": ["AGENT_ID", "AGENT_NAME", "ANTHROPIC_API_KEY"],
+    "skill": ["~/.claude/skills", ".claude/skills"]
+  },
+  "events": {
+    "completed": "verified",
+    "failed": "verified",
+    "permission_required": "verified",
+    "input_required": "verified"
+  },
+  "installInstructions": "Run: agent-attention integration install claude-code\nThis installs hooks.json to .claude/ in your project.",
+  "configFile": "~/.claude/settings.json",
+  "skillsPath": "~/.claude/skills",
+  "injectAgentId": true,
+  "tags": ["anthropic", "hook", "cli", "terminal"],
+  "docs": ["https://code.claude.com/docs/en/hooks.md", "https://code.claude.com/docs/en/skills.md"],
+  "status": "stable"
+}

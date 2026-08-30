@@ -113,7 +113,6 @@
 ---
 
 ## 八、修复记录（2026-08-22，按第六节杠杆顺序执行）
-
 > 每条含：改动文件、修法、验证方式与结果。验证级别标注：L1=单测 / L2=CLI 实跑 / L3=Windows 实机。
 
 ### P0（真实交互路径）
@@ -165,4 +164,63 @@
 - win32 编译路径：`scripts/verify-win32-paths.js` **7/7 PASS**。
 - Windows 实机 E2E：daemon start → tray 就绪 → recordEvent → tray-state.json 传播(unread=1) → mark-all-read(visible=False 传播) → doctor 全绿 → stop 四文件清净 → 立即重启成功 → 并发 start 自动替换且进程数恒 1 → 最终优雅停止。
 - Pester：环境仅 Pester 3.4.0，不支持测试文件的 Pester4+ `Should -Op` 语法（**既有限制，非本轮引入**）；已用上述免 Pester 脚本替代取证。
+
+---
+
+## 九、"state.json corrupted" 根因调查与修复（2026-08-30）
+
+### 现象
+运行时日志（`runtime.jsonl`）反复出现 `state_read_failed: state.json corrupted, using defaults`，
+累计 82 条，分布在 08-27 ~ 08-30。初判为生产腐蚀红旗。
+
+### 调查方法（实读源码 + 实跑取证）
+1. **静态排查写入者**：grep 全仓 `state.json` 的所有写入点。
+   结论：所有生产 TS 写入者（`AttentionState.atomicWrite`、`readState` 修正路径、`commands`、
+   `daemon`、`pipeline/ipc`）均走 tmp+rename 原子写；C# UI 只读不写。无生产非原子写入者。
+2. **复现取证**：
+   - 单进程 200× `concurrent` 场景：0 次腐蚀。
+   - **多进程 30 批 × 6 进程**（真实生产形状）：`state.json` **从未变成非法 JSON**（全部 `parsed: ok`）。
+   但暴露了两个真实缺陷（见下）。
+3. **插桩 readState**：在 catch 里 dump 腐蚀原始字节，跑完整测试套件。
+   捕获 9 个样本，**全部**位于 `D:\Temp\agent-attention-*` 临时测试目录，内容是
+   `not valid json {{{`、`garbage`、`not json {{{broken` —— 即**测试故意写入的坏 JSON**。
+4. **日志分析**：82 条 `state_read_failed` 的时间戳全部紧邻 `event_recorded a → completed: concurrent N`
+   等测试生成事件。**生产 agent 通知（真实任务描述）从未触发腐蚀。**
+
+### 根因判定
+- **表面现象（82 条腐蚀告警）= 测试日志污染**，非生产腐蚀。`logging.ts` 固定写
+  `~/.agent-attention/logs/runtime.jsonl`，**不尊重 `AGENT_ATTENTION_HOME`**（dedup/registry/telemetry 均尊重）。
+  测试进程把测试临时文件的坏 JSON 读失败日志写进了生产 runtime.jsonl，造成"90 次错误"误报。
+- **真实缺陷（压测复现）**：
+  - **C1 事件静默丢失**：`atomicWrite` 在 Windows 上 `renameSync` 到被占用文件返回 EPERM/EACCES，
+    连续 3 次重试**无退避**（全部落在同一竞争窗口内失败）→ 放弃写入 → **事件丢失**。
+    多进程压测 11/30 批次触发。
+  - **C2 tmp 泄漏**：`readState` 修正路径 rename 失败后**从不清理 tmp** → tmp 文件永久残留。
+
+### 修复
+| # | 改法 | 文件 |
+|---|------|------|
+| C1 | `atomicWrite` 改为退避重试 `[0,5,20,50,100,200]`（~375ms 窗口）覆盖 Windows 竞争窗口；真实非竞争错误仍传播；耗尽后清理 tmp + ERROR 日志（不丢也不腐蚀） | `src/state/AttentionState.ts` |
+| C2 | `readState` 修正路径复用 `atomicWrite`，rename 失败时清理 tmp（修泄漏） | 同上 |
+| C3 | `logging.ts` 尊重 `AGENT_ATTENTION_HOME`，根治测试日志污染生产日志 | `src/logging.ts` |
+| 附 | `readState` 腐蚀日志补 `parseErr` 上下文，未来诊断一眼可见 | `src/state/AttentionState.ts` |
+
+### 回归测试
+新增 `tests/state-corruption-regression.test.ts`（6 用例，全过）：
+- EPERM 退避重试后事件成功持久化、无 tmp 泄漏
+- 持续 EPERM 时不抛异常、无 tmp 残留
+- 非 contention 真实错误正确传播、无 tmp 残留
+- `readState` 修正路径 contention 时不留 tmp（锁旧 bug）
+- 日志隔离到 `AGENT_ATTENTION_HOME`（不污染真实用户目录）
+- N 次并发写后 state.json 仍合法、无 tmp 垃圾
+
+### 验证级别
+- **L1 单测**：6/6 PASS。
+- **L2 CLI/进程**：完整套件 **23 suites / 168 tests PASS**（从 162 增 6）。
+- **L3 Windows 实机**：daemon start → 3× 真实 `agent-notify`（completed/failed）→ state.json 合法 JSON、0 tmp 残留、3 条事件正确落盘。
+- **多进程压测**：修复前 11/30 批 `state_write_failed`；修复后 `parsed: ok` 全过、无 tmp 泄漏。
+
+### 诚实结论
+> 生产 `state.json` 从未被真实事件腐蚀。之前的"90 次腐蚀错误"是测试日志污染造成的误报。
+> 真实可靠性缺陷（Windows rename 竞争致事件静默丢失 + tmp 泄漏）已修复并加回归测试锁死。
 

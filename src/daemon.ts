@@ -42,6 +42,7 @@ function atomicWriteFileSync(filePath: string, contents: string): void {
 // Module-level logger — writable from both createDaemon() and process handlers.
 // Lazy-init: opening the stream at module load raced with parallel test
 // workers that delete ~/.agent-attention between mkdirSync and open.
+const LOG_MAX_LINES = 10_000;
 let _logFile: fs.WriteStream | null = null;
 const LOG_PATH = path.join(os.homedir(), '.agent-attention', 'daemon.log');
 function getLogFile(): fs.WriteStream {
@@ -52,9 +53,31 @@ function getLogFile(): fs.WriteStream {
   }
   return _logFile;
 }
+
+/**
+ * Rotate daemon.log if it has grown past LOG_MAX_LINES. Keeps the most
+ * recent 80% of lines so a single rotation does not drop too much history.
+ * Best-effort: any I/O failure is swallowed — logging must never crash
+ * the daemon.
+ */
+function rotateDaemonLog(): void {
+  try {
+    if (!fs.existsSync(LOG_PATH)) return;
+    const content = fs.readFileSync(LOG_PATH, 'utf-8');
+    const lines = content.split('\n').filter(l => l.length > 0);
+    if (lines.length <= LOG_MAX_LINES) return;
+    const keep = Math.floor(lines.length * 0.8);
+    fs.writeFileSync(LOG_PATH, lines.slice(-keep).join('\n') + '\n', 'utf-8');
+  } catch {
+    // best-effort
+  }
+}
 export function daemonLog(msg: string, debug?: boolean): void {
   const ts = new Date().toISOString();
-  try { getLogFile().write(`[${ts}] ${msg}\n`); } catch {}
+  try {
+    getLogFile().write(`[${ts}] ${msg}\n`);
+    rotateDaemonLog();
+  } catch {}
   if (debug) console.error(`[daemon] ${msg}`);
 }
 export function closeDaemonLog(): void { try { _logFile?.end(); } catch {} }

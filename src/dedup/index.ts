@@ -48,20 +48,44 @@ function readLog(): DedupLog {
 
 /**
  * Write the dedup log atomically (tmp + rename). Best-effort — never throws.
+ *
+ * P1 fix: previous version fell back to a non-atomic writeFileSync on
+ * EPERM/EACCES, which can leave dedup.json half-written when a concurrent
+ * process is reading. We now retry the atomic rename with a tiny backoff
+ * to ride out brief contention (Windows AV scans, parallel agents). After
+ * exhausting retries, the entry is silently dropped — losing one dedup hit
+ * is preferable to corrupting the on-disk log.
  */
 function writeLog(log: DedupLog): void {
   try {
     fs.mkdirSync(path.dirname(DEDUP_LOG_PATH), { recursive: true });
     const tmp = `${DEDUP_LOG_PATH}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(log), 'utf-8');
-    try {
-      fs.renameSync(tmp, DEDUP_LOG_PATH);
-    } catch (err: any) {
-      if (err && (err.code === 'EPERM' || err.code === 'EACCES')) {
-        fs.writeFileSync(DEDUP_LOG_PATH, JSON.stringify(log), 'utf-8');
+    // Retry atomic rename — Windows AV / parallel agents may briefly hold
+    // a handle on dedup.json. Three tries with backoff is enough for the
+    // realistic contention window without slowing steady-state writes.
+    const delays = [0, 5, 20];
+    let renamed = false;
+    for (const delay of delays) {
+      if (delay > 0) {
+        const until = Date.now() + delay;
+        while (Date.now() < until) { /* spin */ }
+      }
+      try {
+        fs.renameSync(tmp, DEDUP_LOG_PATH);
+        renamed = true;
+        break;
+      } catch (err: any) {
+        if (!err || (err.code !== 'EPERM' && err.code !== 'EACCES' && err.code !== 'EBUSY')) {
+          throw err;
+        }
       }
     }
-    try { fs.unlinkSync(tmp); } catch {}
+    if (!renamed) {
+      // Best-effort cleanup; give up on this entry to avoid corrupting the log.
+      try { fs.unlinkSync(tmp); } catch {}
+      return;
+    }
   } catch {
     // best-effort, never throw
   }

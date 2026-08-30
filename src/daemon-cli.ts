@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env node
+#!/usr/bin/env node
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -929,12 +929,55 @@ function main(): void {
     console.log('  setup            Quick setup: install daemon + register agent');
     console.log('  discover         Scan PATH for installed agents');
     console.log('  integrate <id>   Enable integration for a discovered agent');
+    console.log('  hook             Handle Claude Code hook stdin (internal — do not call manually)');
     process.exit(0);
   }
 
   if (command === 'setup') { runSetup(); return; }
   if (command === 'discover') { runDiscover(); return; }
   if (command === 'integrate') { runIntegrate(args[1] || ''); return; }
+
+  // New: Integration management commands
+  if (command === 'integration') {
+    const subcommand = args[1];
+    const agentId = args[2];
+    if (!subcommand) {
+      console.log('Usage: agent-attention integration <list|install|uninstall|status> [agent-id]');
+      console.log('');
+      console.log('Commands:');
+      console.log('  list              List all known integrations and their status');
+      console.log('  install <id>      Install integration for an agent');
+      console.log('  uninstall <id>    Remove integration for an agent');
+      console.log('  status <id>       Show integration status for an agent');
+      process.exit(0);
+    }
+    if (subcommand === 'list') { runIntegrationList(); return; }
+    if (subcommand === 'install') {
+      if (!agentId) {
+        console.log('Usage: agent-attention integration install <agent-id>');
+        process.exit(1);
+      }
+      runIntegrationInstall(agentId); return;
+    }
+    if (subcommand === 'uninstall') {
+      if (!agentId) {
+        console.log('Usage: agent-attention integration uninstall <agent-id>');
+        process.exit(1);
+      }
+      runIntegrationUninstall(agentId); return;
+    }
+    if (subcommand === 'status') {
+      if (!agentId) {
+        console.log('Usage: agent-attention integration status <agent-id>');
+        process.exit(1);
+      }
+      runIntegrationStatus(agentId); return;
+    }
+    console.log(`Unknown integration subcommand: ${subcommand}`);
+    process.exit(1);
+  }
+
+  if (command === 'hook') { runHook(); return; }
 
   if (command === 'daemon') {
     if (!subcommand) {
@@ -1064,6 +1107,153 @@ function main(): void {
     console.log(`Unknown command: ${command}`);
     process.exit(1);
   }
+}
+
+/**
+ * Integration management commands
+ */
+function runIntegrationList(): void {
+  const { discoverIntegrations } = require('./integration/catalog');
+  const results = discoverIntegrations();
+  console.log('Agent Attention — Integration Capability Catalog\n');
+  console.log('┌───────────────────┬──────────┬──────────────┬─────────────────┐');
+  console.log('│ Agent             │ Level    │ Mechanism    │ Status          │');
+  console.log('├───────────────────┼──────────┼──────────────┼─────────────────┤');
+  for (const r of results) {
+    const installed = r.installed ? '✓' : '✗';
+    const levelNames: Record<number, string> = {
+      0: 'L0 CLI', 1: 'L1 Skill', 2: 'L2 Wrapper', 3: 'L3 Hook',
+      4: 'L4 Plugin', 5: 'L5 MCP', 6: 'L6 ACP', 7: 'L7 Native',
+    };
+    const level = levelNames[r.achievableLevel] ?? 'L?';
+    console.log(`│ ${r.manifest.name.padEnd(15)} │ ${level.padEnd(8)} │ ${r.recommendedMechanism.padEnd(12)} │ ${installed} ${r.manifest.status ?? 'experimental'} │`);
+  }
+  console.log('└───────────────────┴──────────┴──────────────┴─────────────────┘');
+}
+
+function runIntegrationInstall(agentId: string): void {
+  const { getManifest, isAgentInstalled } = require('./integration/catalog');
+  const { getProvider } = require('./integration/providers');
+  const manifest = getManifest(agentId);
+  if (!manifest) {
+    console.error(`Unknown agent: ${agentId}`);
+    console.log('Run: agent-attention integration list');
+    process.exit(1);
+  }
+  const installed = isAgentInstalled(manifest);
+  if (!installed) {
+    console.error(`Agent "${manifest.name}" is not installed.`);
+    console.log('Install it first, then run this command again.');
+    process.exit(1);
+  }
+  const provider = getProvider(manifest.mechanism);
+  try {
+    const installPath = provider.install(manifest);
+    console.log(`Installed ${manifest.mechanism} integration for ${manifest.name}`);
+    console.log(`  Path: ${installPath}`);
+    console.log('\nInstructions:');
+    console.log(provider.getInstallInstructions(manifest));
+  } catch (err) {
+    console.error(`Failed to install integration: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
+}
+
+function runIntegrationUninstall(agentId: string): void {
+  const { getManifest } = require('./integration/catalog');
+  const { getProvider } = require('./integration/providers');
+  const manifest = getManifest(agentId);
+  if (!manifest) {
+    console.error(`Unknown agent: ${agentId}`);
+    process.exit(1);
+  }
+  const provider = getProvider(manifest.mechanism);
+  provider.uninstall(manifest);
+  console.log(`Uninstalled ${manifest.mechanism} integration for ${manifest.name}`);
+}
+
+function runIntegrationStatus(agentId: string): void {
+  const { getManifest, isAgentInstalled, getEffectiveReliability, getSupportedEvents } = require('./integration/catalog');
+  const manifest = getManifest(agentId);
+  if (!manifest) {
+    console.error(`Unknown agent: ${agentId}`);
+    process.exit(1);
+  }
+  const installed = isAgentInstalled(manifest);
+  const reliability = getEffectiveReliability(manifest);
+  const events = getSupportedEvents(manifest);
+  console.log(`Agent: ${manifest.name}`);
+  console.log(`  ID: ${manifest.id}`);
+  console.log(`  Installed: ${installed ? 'Yes' : 'No'}`);
+  console.log(`  Level: L${manifest.level} (${manifest.mechanism})`);
+  console.log(`  Reliability: ${reliability}`);
+  console.log(`  Events: ${events.join(', ') || 'none'}`);
+  console.log(`  Status: ${manifest.status ?? 'experimental'}`);
+}
+
+/**
+ * Claude Code hook handler: read JSON from stdin, record an attention event.
+ * Used as `command` in hooks.json. Never called directly by users.
+ */
+function runHook(): void {
+  const { recordEvent } = require('./state/AttentionState');
+  const { autoDetectAndRegister } = require('./registry');
+  const { log, generateCorrelationId } = require('./logging');
+  const os = require('os');
+  const path = require('path');
+
+  const statePath = path.join(
+    process.env.AGENT_ATTENTION_HOME || path.join(os.homedir(), '.agent-attention'),
+    'state.json',
+  );
+
+  let body = '';
+  process.stdin.setEncoding('utf-8');
+  process.stdin.on('data', (chunk: string) => { body += chunk; });
+  process.stdin.on('end', () => {
+    if (!body.trim()) { process.exit(0); return; }
+    let payload: any;
+    try { payload = JSON.parse(body); } catch { process.exit(0); return; }
+
+    const status = payload.exitStatus;
+    const turns = payload.turns ?? 0;
+    const sessionId = (payload.sessionId as string | undefined) ?? 'unknown';
+    let event: string;
+    let message: string;
+    let priority: 'P0' | 'P1' | 'P2';
+
+    if (status === 0 && turns > 0) {
+      event = 'completed'; priority = 'P2';
+      message = `Claude Code session ended cleanly (${turns} turn${turns > 1 ? 's' : ''}, session ${sessionId.slice(0, 8)})`;
+    } else if (status === 1) {
+      event = 'failed'; priority = 'P1';
+      message = `Claude Code session failed (exit=${status}, session ${sessionId.slice(0, 8)})`;
+    } else if (status === 2) {
+      event = 'input_required'; priority = 'P0';
+      message = `Claude Code session cancelled by user (session ${sessionId.slice(0, 8)})`;
+    } else {
+      process.exit(0); return;
+    }
+
+    const agentId = payload.agentId ?? autoDetectAndRegister();
+    const correlationId = generateCorrelationId();
+    try {
+      recordEvent(statePath, {
+        type: event as any,
+        priority,
+        agent_id: agentId,
+        agent_name: agentId,
+        title: `${agentId}: ${event}`,
+        message,
+        timestamp: Date.now(),
+        correlation_id: correlationId,
+      });
+      log({ component: 'hook', level: 'INFO', event: 'hook_handled', message: `${agentId} → ${event}`, correlation_id: correlationId, context: { sessionId: payload.sessionId, exitStatus: status, turns } });
+    } catch (err) {
+      log({ component: 'hook', level: 'ERROR', event: 'hook_failed', message: `failed to record hook event: ${err instanceof Error ? err.message : String(err)}` });
+    }
+    process.exit(0);
+  });
 }
 
 main();

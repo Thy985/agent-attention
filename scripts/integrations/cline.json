@@ -1,0 +1,29 @@
+{
+  "id": "cline",
+  "name": "Cline",
+  "description": "Open-source AI coding agent with CLI, VS Code extension, and ACP support",
+  "binaryPatterns": ["cline", "cline.exe"],
+  "installPaths": [
+    "~/.cline"
+  ],
+  "level": 3,
+  "mechanism": "hook",
+  "interfaces": {
+    "hook": ["Stop", "SessionStart", "PostToolUse"],
+    "cli": ["--json", "--yolo", "--acp"],
+    "env": ["CLINE_API_KEY", "CLINE_PROVIDER"],
+    "acp": true
+  },
+  "events": {
+    "completed": "verified",
+    "failed": "verified",
+    "permission_required": "probable",
+    "input_required": "probable"
+  },
+  "installInstructions": "Run: agent-attention integration install cline\nConfigure --hooks-dir in your Cline settings.",
+  "configFile": "~/.cline/data/settings.json",
+  "injectAgentId": false,
+  "tags": ["open-source", "hook", "cli", "mcp", "acp"],
+  "docs": ["https://docs.cline.bot/cli/cli-reference.md"],
+  "status": "stable"
+}

@@ -31,7 +31,8 @@
   ],
   "files": [
     "dist/",
-    "src/center/csharp/dist/win-x64/**/*"
+    "src/center/csharp/dist/win-x64/**/*",
+    "skills/"
   ],
   "license": "MIT",
   "engines": {

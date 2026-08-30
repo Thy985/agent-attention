@@ -1,0 +1,25 @@
+{
+  "id": "continue",
+  "name": "Continue",
+  "description": "Open-source coding agent with VS Code/JetBrains extensions and MCP support",
+  "binaryPatterns": [],
+  "installPaths": [
+    "~/.continue"
+  ],
+  "level": 1,
+  "mechanism": "skill",
+  "interfaces": {
+    "mcp": ["continue-sdk"],
+    "ide": ["VS Code extension", "JetBrains plugin"],
+    "skill": [".continue/skills"]
+  },
+  "events": {
+    "completed": "best_effort",
+    "failed": "best_effort"
+  },
+  "installInstructions": "Install Continue extension in your IDE.\nAdd agent-attention skill to .continue/skills/agent-attention/SKILL.md\nNote: Continue is IDE-only; use wrapper for CLI sessions.",
+  "injectAgentId": false,
+  "tags": ["typescript", "mcp", "ide", "extension"],
+  "docs": ["https://continue.dev/docs/"],
+  "status": "experimental"
+}

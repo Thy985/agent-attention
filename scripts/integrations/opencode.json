@@ -1,0 +1,29 @@
+{
+  "id": "opencode",
+  "name": "OpenCode",
+  "description": "Open-source coding agent with Plugin API, Skill system, and session hooks",
+  "binaryPatterns": ["opencode", "opencode.exe"],
+  "installPaths": [
+    "~/.opencode"
+  ],
+  "level": 4,
+  "mechanism": "plugin",
+  "interfaces": {
+    "plugin": ["session hooks", "tool hooks", "model hooks"],
+    "skill": ["~/.opencode/skills", ".agents/skills"],
+    "cli": ["opencode run", "opencode eval"],
+    "env": ["OPENCODE_HOME"]
+  },
+  "events": {
+    "completed": "probable",
+    "failed": "best_effort",
+    "permission_required": "best_effort"
+  },
+  "installInstructions": "Create OpenCode plugin that listens to session events and calls agent-notify.\nOr use skill-based approach with .agents/skills/agent-attention/SKILL.md",
+  "configFile": "~/.opencode/config.json",
+  "skillsPath": "~/.opencode/skills",
+  "injectAgentId": false,
+  "tags": ["open-source", "plugin", "skill", "hook", "server"],
+  "docs": ["https://opencode.ai/v2/docs/skills", "https://opencode.ai/v2/docs/cli"],
+  "status": "experimental"
+}

@@ -1,6 +1,5 @@
 import * as fs from 'fs';
 import * as crypto from 'crypto';
-import * as os from 'os';
 import { log, generateCorrelationId, type LogEntry } from '../logging';
 
 export type EventName = 'completed' | 'permission_required' | 'input_required' | 'failed';
@@ -55,8 +54,8 @@ export function readState(statePath: string): State {
     let raw = fs.readFileSync(statePath, 'utf-8');
     if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
     parsed = JSON.parse(raw) as State;
-  } catch {
-    log({ component: 'state', level: 'ERROR', event: 'state_read_failed', message: 'state.json corrupted, using defaults' });
+  } catch (e) {
+    log({ component: 'state', level: 'ERROR', event: 'state_read_failed', message: 'state.json corrupted, using defaults', context: { parseErr: e instanceof Error ? e.message : String(e) } });
     return { ...DEFAULT_STATE, updatedAt: Date.now() };
   }
   const actualUnread = parsed.events.filter((e: StateEvent) => !e.read).length;
@@ -71,11 +70,9 @@ export function readState(statePath: string): State {
   }
   if (unreadChanged || visibleChanged) {
     try {
-      const tmpPath = `${statePath}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`;
-      fs.writeFileSync(tmpPath, JSON.stringify(parsed, null, 2), "utf-8");
-      fs.renameSync(tmpPath, statePath);
-    } catch {
-      log({ component: 'state', level: 'WARN', event: 'state_rewrite_failed', message: 'could not persist corrected values', context: { path: statePath } });
+      atomicWrite(statePath, parsed);
+    } catch (err) {
+      log({ component: 'state', level: 'WARN', event: 'state_rewrite_failed', message: 'could not persist corrected values', context: { path: statePath, error: String(err) } });
     }
   }
   return parsed;
@@ -87,26 +84,47 @@ function generateEventId(timestamp: number): string {
   return `evt-${timestamp}-${crypto.randomBytes(3).toString('hex')}`;
 }
 
+/** Backoff delays (ms) between rename retries for Windows rename contention. */
+const RENAME_RETRY_DELAYS_MS = [0, 5, 20, 50, 100, 200];
+
+/** Blocking sleep — used only between rename retries (rare, short). */
+function sleepSync(ms: number): void {
+  if (ms <= 0) return;
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch {
+    const end = Date.now() + ms;
+    while (Date.now() < end) { /* fallback spin */ }
+  }
+}
+
+/**
+ * Write `state` to `statePath` atomically (tmp + rename) with backoff retries.
+ *
+ * Windows: renaming over a file that is briefly open (AV scan, concurrent
+ * reader/writer) returns EPERM/EACCES/EBUSY. Immediate retries fail because the
+ * contention window is still open — a short backoff lets it ride out, so an
+ * event is not silently dropped. Real (non-contention) errors propagate to the
+ * caller. On exhausted retries the tmp file is always cleaned up (no leak).
+ */
 function atomicWrite(statePath: string, state: State): void {
   const tmpPath = `${statePath}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
   fs.writeFileSync(tmpPath, JSON.stringify(state, null, 2), 'utf-8');
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (const delay of RENAME_RETRY_DELAYS_MS) {
+    if (delay > 0) sleepSync(delay);
     try {
       fs.renameSync(tmpPath, statePath);
       return;
     } catch (err: any) {
-      if (err.code !== 'EPERM' && err.code !== 'EACCES') {
-        try { fs.unlinkSync(tmpPath); } catch {}
-        throw err;
+      if (err && (err.code === 'EPERM' || err.code === 'EACCES' || err.code === 'EBUSY')) {
+        continue; // transient contention — retry with backoff
       }
       try { fs.unlinkSync(tmpPath); } catch {}
-      if (attempt < 2) {
-        fs.writeFileSync(tmpPath, JSON.stringify(state, null, 2), 'utf-8');
-      }
+      throw err;
     }
   }
-  log({ component: 'state', level: 'ERROR', event: 'state_write_failed', message: 'atomic write failed after 3 retries', context: { path: statePath } });
   try { fs.unlinkSync(tmpPath); } catch {}
+  log({ component: 'state', level: 'ERROR', event: 'state_write_failed', message: 'atomic write failed after backoff retries', context: { path: statePath } });
 }
 
 export function recordEvent(statePath: string, input: RecordEventInput): State {

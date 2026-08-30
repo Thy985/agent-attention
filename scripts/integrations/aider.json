@@ -1,0 +1,25 @@
+{
+  "id": "aider",
+  "name": "Aider",
+  "description": "AI pair programming tool for terminal-based LLM collaboration",
+  "binaryPatterns": ["aider", "aider.exe"],
+  "installPaths": [
+    "~/.aider*"
+  ],
+  "level": 2,
+  "mechanism": "wrapper",
+  "interfaces": {
+    "cli": ["aider --model", "aider --yes-all"],
+    "env": ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY"],
+    "process": ["exit code 0 = normal exit"]
+  },
+  "events": {
+    "completed": "best_effort",
+    "failed": "best_effort"
+  },
+  "installInstructions": "Create wrapper script:\n#!/bin/bash\nexport AGENT_ID=aider\naider \"$@\"; code=$?\nif [ $code -eq 0 ]; then\n  agent-notify completed \"Aider session finished\"\nelse\n  agent-notify failed \"Aider session failed (exit=$code)\"\nfi",
+  "injectAgentId": true,
+  "tags": ["python", "wrapper", "cli", "pair-programming"],
+  "docs": ["https://aider.chat/docs/"],
+  "status": "experimental"
+}

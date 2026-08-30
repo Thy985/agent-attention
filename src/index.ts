@@ -2,7 +2,7 @@
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
 import { notify } from './notification/win32';
-import { shouldNotify } from './dedup';
+import { shouldNotify, getDedupAgentId } from './dedup';
 import { loadConfig } from './config';
 import { EventName, EVENT_PRIORITY } from './events';
 import { recordEvent } from './state';
@@ -89,44 +89,44 @@ async function main(): Promise<void> {
   // Dedup check (best-effort) — AC-07: key includes agent+event+message
   // Use machine-wide dedup id (hostname only) so dedup works across processes
   // even when each process has a unique registration id (hostname-pid).
-  const { getDedupAgentId } = require('./dedup');
   const dedupEnabled = shouldNotify(getDedupAgentId(), eventName, message);
   if (!dedupEnabled) {
     process.exit(0);
   }
 
-  // Send notification (best-effort)
+  // P0 fix: state must be written BEFORE notify so a state-write failure
+  // never produces an orphaned toast. Notification is best-effort: if the
+  // toast fails the event is still recorded in state.json.
+  let correlationId = generateCorrelationId();
+  try {
+    const priority = EVENT_PRIORITY[eventName as EventName];
+    log({ component: 'cli', level: 'INFO', event: 'notify_called', message: `${eventName}: ${message.substring(0, 80)}`, correlation_id: correlationId, context: { agent_id: agent, event: eventName, priority } });
+    // AC-06: compliance tracking — log whether this notification follows the protocol
+    const compliant = checkCompliance(agent, eventName);
+    log({ component: 'cli', level: compliant ? 'INFO' : 'WARN', event: 'compliance_check', message: `${agent} notification ${eventName} is ${compliant ? 'valid' : 'unexpected'}`, correlation_id: correlationId, context: { agent_id: agent, event: eventName, priority, compliant } });
+    recordEvent(STATE_PATH, {
+      type: eventName as EventName,
+      priority,
+      agent_id: agent,
+      agent_name: agent,
+      title: `${agent}: ${eventName}`,
+      message,
+      timestamp: Date.now(),
+      correlation_id: correlationId,
+    });
+  } catch (stateErr) {
+    console.error(`State write failed: ${stateErr instanceof Error ? stateErr.message : String(stateErr)}`);
+    process.exit(1);
+  }
+
   try {
     await notify(eventName as EventName, message, config.sound?.enabled ?? true);
-
-    // Best-effort state write — failure does NOT affect exit code.
-    // Daemon (if running) will simply not see this event until next one.
-    try {
-      const priority = EVENT_PRIORITY[eventName as EventName];
-      const correlationId = generateCorrelationId();
-      log({ component: 'cli', level: 'INFO', event: 'notify_called', message: `${eventName}: ${message.substring(0, 80)}`, correlation_id: correlationId, context: { agent_id: agent, event: eventName, priority } });
-      // AC-06: compliance tracking — log whether this notification follows the protocol
-      const compliant = checkCompliance(agent, eventName);
-      log({ component: 'cli', level: compliant ? 'INFO' : 'WARN', event: 'compliance_check', message: `${agent} notification ${eventName} is ${compliant ? 'valid' : 'unexpected'}`, correlation_id: correlationId, context: { agent_id: agent, event: eventName, priority, compliant } });
-      recordEvent(STATE_PATH, {
-        type: eventName as EventName,
-        priority,
-        agent_id: agent,
-        agent_name: agent,
-        title: `${agent}: ${eventName}`,
-        message,
-        timestamp: Date.now(),
-        correlation_id: correlationId,
-      });
-    } catch (stateErr) {
-      console.error(`State write failed (notification still succeeded): ${stateErr instanceof Error ? stateErr.message : String(stateErr)}`);
-    }
-
-      log({ component: 'cli', level: 'INFO', event: 'exit_success', message: 'notification complete' });
+    log({ component: 'cli', level: 'INFO', event: 'exit_success', message: 'notification complete' });
     process.exit(0);
   } catch (err) {
-    console.error(`Notification failed: ${err instanceof Error ? err.message : String(err)}`);
-    process.exit(1);
+    log({ component: 'cli', level: 'WARN', event: 'notify_failed', message: `notification failed: ${err instanceof Error ? err.message : String(err)}`, correlation_id: correlationId });
+    console.error(`Notification failed (event still recorded): ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(0);
   }
 }
 

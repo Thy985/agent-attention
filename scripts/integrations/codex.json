@@ -1,0 +1,27 @@
+{
+  "id": "codex",
+  "name": "Codex CLI",
+  "description": "OpenAI's coding agent that runs locally with configurable hooks",
+  "binaryPatterns": ["codex", "codex.exe"],
+  "installPaths": [
+    "~/.codex"
+  ],
+  "level": 2,
+  "mechanism": "wrapper",
+  "interfaces": {
+    "cli": ["codex run", "codex edit"],
+    "env": ["CODEX_HOME", "OPENAI_API_KEY"],
+    "process": ["exit code 0 = success", "exit code 1 = error"]
+  },
+  "events": {
+    "completed": "probable",
+    "failed": "best_effort"
+  },
+  "installInstructions": "Create wrapper script:\n#!/bin/bash\nexport AGENT_ID=codex\ncodex \"$@\" && agent-notify completed \"Codex session finished\" || agent-notify failed \"Codex session failed\"",
+  "configFile": "~/.codex/config.toml",
+  "skillsPath": "~/.codex/skills",
+  "injectAgentId": true,
+  "tags": ["openai", "wrapper", "cli", "rust"],
+  "docs": ["https://github.com/openai/codex"],
+  "status": "experimental"
+}

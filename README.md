@@ -6,7 +6,7 @@ Windows notification infrastructure for AI Agents. Agents call `agent-notify`; y
 Agent → agent-notify → daemon → Toast + Sound + Tray Icon + Center
 ```
 
-## Quick Start (3 commands)
+## Quick Start (4 commands)
 
 ```bash
 # 1. Install
@@ -18,6 +18,11 @@ agent-attention doctor
 # 3. Find and enable your agents
 agent-attention discover
 agent-attention integrate claude-code
+
+# 4. Install Claude Code hooks (auto-notifies on session end)
+agent-attention hook install     # installs to current project's .claude/hooks.json
+# OR for global install across all projects:
+agent-attention hook install --global
 ```
 
 That's it. Now set `AGENT_ID` in your agent's environment and start sending notifications:
@@ -26,6 +31,9 @@ That's it. Now set `AGENT_ID` in your agent's environment and start sending noti
 export AGENT_ID=claude-code
 agent-notify completed "Task done"
 ```
+
+Or let the hooks handle it — when Claude Code exits, it automatically fires
+`agent-notify` with the session outcome.
 
 ## Commands
 

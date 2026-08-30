@@ -16,11 +16,21 @@ export interface LogEntry {
   compliance_tracking?: { agent_id: string; expected: string; actual: string; result: string };
 }
 
-const LOGS_DIR = path.join(os.homedir(), '.agent-attention', 'logs');
-const LOG_FILE = path.join(LOGS_DIR, 'runtime.jsonl');
 const MAX_LOG_LINES = 10_000; // rotate by line count to avoid unbounded growth
 
 let _level: LogLevel = 'INFO';
+
+/**
+ * Resolve the runtime log file path. Respects AGENT_ATTENTION_HOME so test
+ * runs (which set it to a temp dir) do not pollute the production
+ * ~/.agent-attention/logs/runtime.jsonl — this is the root cause of the
+ * spurious "state.json corrupted" entries that appeared in production logs
+ * during the test suite.
+ */
+function logFilePath(): string {
+  const base = process.env.AGENT_ATTENTION_HOME || path.join(os.homedir(), '.agent-attention');
+  return path.join(base, 'logs', 'runtime.jsonl');
+}
 
 /** Set the minimum log level. Lower levels are filtered out. */
 export function setLogLevel(level: LogLevel): void {
@@ -58,8 +68,9 @@ export function log(opts: {
   };
 
   try {
-    fs.mkdirSync(LOGS_DIR, { recursive: true });
-    fs.appendFileSync(LOG_FILE, JSON.stringify(entry) + '\n', 'utf-8');
+    const logFile = logFilePath();
+    fs.mkdirSync(path.dirname(logFile), { recursive: true });
+    fs.appendFileSync(logFile, JSON.stringify(entry) + '\n', 'utf-8');
     // Rotate if too large
     rotateIfNeeded();
   } catch {
@@ -78,21 +89,23 @@ export function log(opts: {
 /** Rotate log if it exceeds MAX_LOG_LINES (keep last 8000). */
 function rotateIfNeeded(): void {
   try {
-    if (!fs.existsSync(LOG_FILE)) return;
-    const content = fs.readFileSync(LOG_FILE, 'utf-8');
+    const logFile = logFilePath();
+    if (!fs.existsSync(logFile)) return;
+    const content = fs.readFileSync(logFile, 'utf-8');
     const lines = content.split('\n').filter(l => l.trim());
     if (lines.length <= MAX_LOG_LINES) return;
     // Keep last 80%
     const keep = Math.floor(lines.length * 0.8);
-    fs.writeFileSync(LOG_FILE, lines.slice(-keep).join('\n') + '\n', 'utf-8');
+    fs.writeFileSync(logFile, lines.slice(-keep).join('\n') + '\n', 'utf-8');
   } catch {}
 }
 
 /** Read recent log entries. Returns last N entries (most recent first). */
 export function readLogs(n: number = 50): LogEntry[] {
   try {
-    if (!fs.existsSync(LOG_FILE)) return [];
-    const content = fs.readFileSync(LOG_FILE, 'utf-8');
+    const logFile = logFilePath();
+    if (!fs.existsSync(logFile)) return [];
+    const content = fs.readFileSync(logFile, 'utf-8');
     const lines = content.split('\n').filter(l => l.trim());
     const entries = lines.map(l => {
       try { return JSON.parse(l) as LogEntry; } catch { return null; }
@@ -111,5 +124,5 @@ export function findCorrelated(correlationId: string): LogEntry[] {
 
 /** Wipe the log file (for testing). */
 export function wipeLog(): void {
-  try { fs.unlinkSync(LOG_FILE); } catch {}
+  try { fs.unlinkSync(logFilePath()); } catch {}
 }
