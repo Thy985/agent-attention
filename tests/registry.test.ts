@@ -271,8 +271,9 @@ describe('Registry v3 with Target', () => {
       try {
         process.env.AGENT_ID = 'my-agent';
         process.env.AGENT_NAME = 'My Agent';
-        const id = autoDetectAndRegister();
-        expect(id).toBe('my-agent');
+        const result = autoDetectAndRegister();
+        expect(result.agentId).toBe('my-agent');
+        expect(result.agentName).toBe('My Agent');
         const agent = getAgent('my-agent');
         expect(agent).toBeDefined();
         expect(agent!.name).toBe('My Agent');
@@ -296,9 +297,10 @@ describe('Registry v3 with Target', () => {
       try {
         delete process.env.AGENT_ID;
         delete process.env.AGENT_NAME;
-        const id = autoDetectAndRegister();
+        const result = autoDetectAndRegister();
         // Anonymous fallback — real agents must set AGENT_ID for stable identity
-        expect(id).toBe('anonymous');
+        expect(result.agentId).toBe('anonymous');
+        expect(result.agentName).toBe('anonymous');
         // Warning must be emitted to alert about missing identity
         expect(warnSpy).toHaveBeenCalled();
       } finally {

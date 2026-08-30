@@ -77,9 +77,9 @@ async function main(): Promise<void> {
   }
 
   // Auto-detect and register agent (AC-02) — per-process stable id
-  const agent = autoDetectAndRegister();
+  const { agentId, agentName } = autoDetectAndRegister();
   // Warn if still using anonymous identity (AGENT_ID was not set)
-  if (agent === 'anonymous') {
+  if (agentId === 'anonymous') {
     console.warn(
       '[agent-attention] WARNING: running as anonymous agent. ' +
       'Set AGENT_ID/AGENT_NAME env vars or run: agent-attention agent register <id> "<name>"',
@@ -100,16 +100,16 @@ async function main(): Promise<void> {
   let correlationId = generateCorrelationId();
   try {
     const priority = EVENT_PRIORITY[eventName as EventName];
-    log({ component: 'cli', level: 'INFO', event: 'notify_called', message: `${eventName}: ${message.substring(0, 80)}`, correlation_id: correlationId, context: { agent_id: agent, event: eventName, priority } });
+    log({ component: 'cli', level: 'INFO', event: 'notify_called', message: `${eventName}: ${message.substring(0, 80)}`, correlation_id: correlationId, context: { agent_id: agentId, event: eventName, priority } });
     // AC-06: compliance tracking — log whether this notification follows the protocol
-    const compliant = checkCompliance(agent, eventName);
-    log({ component: 'cli', level: compliant ? 'INFO' : 'WARN', event: 'compliance_check', message: `${agent} notification ${eventName} is ${compliant ? 'valid' : 'unexpected'}`, correlation_id: correlationId, context: { agent_id: agent, event: eventName, priority, compliant } });
+    const compliant = checkCompliance(agentId, eventName);
+    log({ component: 'cli', level: compliant ? 'INFO' : 'WARN', event: 'compliance_check', message: `${agentName} notification ${eventName} is ${compliant ? 'valid' : 'unexpected'}`, correlation_id: correlationId, context: { agent_id: agentId, event: eventName, priority, compliant } });
     recordEvent(STATE_PATH, {
       type: eventName as EventName,
       priority,
-      agent_id: agent,
-      agent_name: agent,
-      title: `${agent}: ${eventName}`,
+      agent_id: agentId,
+      agent_name: agentName,
+      title: `${agentName}: ${eventName}`,
       message,
       timestamp: Date.now(),
       correlation_id: correlationId,

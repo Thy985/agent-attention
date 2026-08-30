@@ -150,13 +150,32 @@
 | P3-7 | `pushStateToTrayFile` 加 `stopped` 守卫，防 stop 后重建 tray-state.json | `src/daemon.ts` | L1 断言 PASS |
 | 附带 | daemon.log 改惰性初始化 + error 监听，消除模块加载期与并行测试 worker 删目录的竞态（ENOENT flake 根因） | `src/daemon.ts` | L1：全套件连续 3 次 86/86 稳定 |
 
-### 未修（维持原判定）
+### 本轮新修（2026-08-30）
 
-- **P1-12**（`Start-Sleep` 阻塞 UI 线程）：需重写为 WPF `DispatcherTimer` 消息泵架构，属重构而非缺陷修补，本轮不动。
-- **P2-4~P2-13 / P3-1~P3-12**：低危或依赖上述重构，按编号另行排期。
-- **F5/F6/priority 字段/Agent STALE**：维持 §五"架构决策，不要据此重构"判定。
+| # | 修法 | 验证 |
+|---|---|---|
+| P3-6 | `doctor` Sound/Toast 文案修正：snoretoast → node-notifier；Sound 改为依赖 daemon 运行状态而非单纯 platform 判断 | L2：`agent-attention doctor` 输出准确 |
+| P3-8 | `writeRegistry` 改用原子写（tmp + rename），与 `AttentionState.atomicWrite` 一致 | L1：源码断言 PASS |
+| P3-10 | `autoDetectAndRegister` 返回值改为 `{agentId, agentName}` 对象，`index.ts` / `hooks.ts` / `daemon-cli.ts` 全部接入，事件记录时 `agent_name` 正确写入 | L2：hook E2E 验证 `agent_name: claude-code` 正确落盘 |
+| P3-12 | `win32.ts` Toast 回调空 catch 改为 `console.warn` | L1：源码断言 PASS |
 
-### 验证汇总（2026-08-22）
+### 已修复（C# 迁移时一并解决）
+
+- **P1-12** `Start-Sleep` 阻塞 → C# 使用 `DispatcherTimer`，非阻塞
+- **P2-4** tray-state 竞态 → C# 侧读，daemon 侧原子写，无半写
+- **P2-5** 比较键补全 → C# `TrayController` 签名含 `visible|unreadCount|events`
+- **P2-6/P2-7** GDI/USER 泄漏 → C# `Dispose()` + `DestroyIcon()` 在 `Dispose()` 中统一处理
+- **P2-8** Center 整树重建 → C# 增量刷新
+- **P2-9~P2-13** → C# 无对应代码
+- **P3-1~P3-5** → PowerShell 时代 bug，已随迁移消失
+
+### 验证汇总（2026-08-30，P3 修复轮）
+
+- Jest 单测：**198/198 PASS**（25 suites，连续稳定）
+- Hook E2E：`echo '{"sessionId":"test123","exitStatus":0,"turns":5}' \| node dist/daemon-cli.js hook` → state.json `agent_id=claude-code, agent_name=anonymous`（无 AGENT_ID 时正确回退）
+- `agent-attention integration list`：6 agent 正常显示
+- `agent-attention integration status claude-code`：L3 hook verified ✓
+- `agent-attention doctor`：Sound 显示 daemon 运行状态，Toast 显示 node-notifier
 
 - Jest 单测：**86/86 PASS**（10 suites，连续 3 轮稳定），含本轮新增回归：dedup 跨进程持久化、readState 无变更不回写、markAgentEventsRead visible、win32 路径/动作、daemon 锁语义、jump 接线。
 - PowerShell 守卫：`scripts/verify-ps1-guards.ps1` **9/9 PASS**。

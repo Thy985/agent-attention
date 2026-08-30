@@ -71,7 +71,7 @@ export async function notify(
               '-OpenCenter',
             ], { windowsHide: true });
           } catch (err) {
-            try { console.warn(`[agent-notify] failed to open Center: ${err instanceof Error ? err.message : String(err)}`); } catch {}
+            console.warn(`[agent-notify] failed to open Center: ${err instanceof Error ? err.message : String(err)}`);
           }
         } else if (action === 'dismiss') {
           // Mark all read on dismiss
@@ -79,7 +79,7 @@ export async function notify(
             const { spawn } = require('child_process');
             spawn('node', [cliPath, 'mark-all-read'], { windowsHide: true });
           } catch (err) {
-            try { console.warn(`[agent-notify] failed to mark-all-read: ${err instanceof Error ? err.message : String(err)}`); } catch {}
+            console.warn(`[agent-notify] failed to mark-all-read: ${err instanceof Error ? err.message : String(err)}`);
           }
         }
         resolve();

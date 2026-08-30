@@ -98,7 +98,9 @@ function runHook(): void {
       process.exit(0);
     }
 
-    const agentId = payload.agentId ?? autoDetectAndRegister();
+    const resolved = autoDetectAndRegister();
+    const agentId: string = String(payload.agentId ?? resolved.agentId);
+    const agentName: string = String(payload.agentName ?? resolved.agentName ?? 'unknown');
     const eventInfo = inferEvent(payload);
     if (!eventInfo) {
       // No actionable event — nothing to notify.
@@ -115,8 +117,8 @@ function runHook(): void {
             ? 'P1'
             : 'P0',
         agent_id: agentId,
-        agent_name: agentId,
-        title: `${agentId}: ${eventInfo.event}`,
+        agent_name: agentName,
+        title: `${agentName}: ${eventInfo.event}`,
         message: eventInfo.message,
         timestamp: Date.now(),
         correlation_id: correlationId,

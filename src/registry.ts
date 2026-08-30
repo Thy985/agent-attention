@@ -63,8 +63,19 @@ function getIntegrationsPath(): string {
 }
 
 export function writeRegistry(registry: AgentRegistry): void {
-  fs.mkdirSync(path.dirname(getRegistryPath()), { recursive: true });
-  fs.writeFileSync(getRegistryPath(), JSON.stringify(registry, null, 2), 'utf-8');
+  const registryPath = getRegistryPath();
+  fs.mkdirSync(path.dirname(registryPath), { recursive: true });
+  // P3-8 fix: use atomic write (tmp + rename) to prevent corruption from concurrent writes.
+  // This matches the pattern used in AttentionState.atomicWrite.
+  const tmpPath = `${registryPath}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    fs.writeFileSync(tmpPath, JSON.stringify(registry, null, 2), 'utf-8');
+    fs.renameSync(tmpPath, registryPath);
+  } catch (err) {
+    try { fs.unlinkSync(tmpPath); } catch {}
+    // Fallback to direct write if rename fails (e.g., cross-device)
+    fs.writeFileSync(registryPath, JSON.stringify(registry, null, 2), 'utf-8');
+  }
 }
 
 /**
@@ -276,13 +287,14 @@ export function listAgents(): Agent[] {
  * Per Agent Attention Integration Protocol v1:
  * "Agent identity is declared by the Agent, never inferred by the Runtime."
  */
-export function autoDetectAndRegister(): string {
+export function autoDetectAndRegister(): { agentId: string; agentName: string } {
   const envAgentId = process.env.AGENT_ID;
   const envAgentName = process.env.AGENT_NAME;
 
-  // Explicit AGENT_ID — Agent declared identity, register silently
+  // Explicit AGENT_ID — Agent declares identity, register silently
   if (envAgentId) {
-    return registerAgent(envAgentId, envAgentName || envAgentId).agent_id;
+    const registered = registerAgent(envAgentId, envAgentName || envAgentId);
+    return { agentId: registered.agent_id, agentName: registered.name };
   }
 
   // No identity declared — anonymous fallback with warning
@@ -293,5 +305,5 @@ export function autoDetectAndRegister(): string {
     '  Run: agent-attention agent register <id> "<name>"\n' +
     "  Or set AGENT_ID / AGENT_NAME environment variables.",
   );
-  return registerAgent(fallbackId, "anonymous").agent_id;
+  return { agentId: fallbackId, agentName: fallbackId };
 }
