@@ -440,10 +440,34 @@ function status(): void {
   }
 }
 
+/**
+ * Blocking sleep (ms) — used only between restart polls (short, bounded).
+ * Atomics.wait is a true synchronous sleep with no busy CPU spin.
+ */
+function sleepSync(ms: number): void {
+  if (ms <= 0) return;
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch {
+    const end = Date.now() + ms;
+    while (Date.now() < end) { /* fallback spin */ }
+  }
+}
+
 function restart(): void {
+  // P3-9 fix: a fixed 1s delay raced a graceful stop (up to 5s), so the new
+  // daemon could spawn while the old one was still shutting down → a brief
+  // double-daemon window. Instead, stop, then poll until every daemon
+  // process is confirmed gone before starting the replacement.
   stopDaemon();
-  // Wait for cleanup before starting
-  setTimeout(() => startDaemon(), 1000);
+  const deadline = Date.now() + 8000;
+  while (getDaemonPids().length > 0 && Date.now() < deadline) {
+    sleepSync(100);
+  }
+  if (getDaemonPids().length > 0) {
+    console.warn('Old daemon did not exit within 8s; starting anyway (lock will arbitrate).');
+  }
+  startDaemon();
 }
 
 function doctor(): void {

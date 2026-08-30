@@ -67,3 +67,25 @@ describe('killExistingDaemon PowerShell syntax (P2-1)', () => {
     expect(src).toMatch(/\$_\.name/);
   });
 });
+
+describe('restart waits for old daemon to exit (P3-9)', () => {
+  it('restart polls for daemon exit instead of a fixed 1s setTimeout', () => {
+    const src = fs.readFileSync('src/daemon-cli.ts', 'utf8');
+    // Extract the restart function body.
+    const fnIdx = src.indexOf('function restart(): void');
+    const body = src.slice(fnIdx, fnIdx + 900);
+    expect(body).toMatch(/getDaemonPids\(\)\.length > 0/);
+    expect(body).toMatch(/sleepSync\(100\)/);
+    // Must NOT blindly start after a fixed 1s delay.
+    expect(body).not.toMatch(/setTimeout\(\(\) => startDaemon\(\), 1000\)/);
+    // Still starts the replacement daemon.
+    expect(body).toMatch(/startDaemon\(\)/);
+  });
+
+  it('bounded: warns and starts anyway if old daemon lingers', () => {
+    const src = fs.readFileSync('src/daemon-cli.ts', 'utf8');
+    const fnIdx = src.indexOf('function restart(): void');
+    const body = src.slice(fnIdx, fnIdx + 900);
+    expect(body).toMatch(/Old daemon did not exit within 8s/);
+  });
+});
