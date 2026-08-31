@@ -88,18 +88,20 @@ Day 4: P1-3 (OpenCode Plugin 调研)
 Day 5: 测试 + 文档 + 提交
 ```
 
-### 下周
+### 下周（DSH 接入 + 产品化）
 ```
-- 完成剩余 P0/P1 Bug 修复
-- 开始 P2 产品化（LICENSE + npm publish）
-- 评估 Center Window 增量更新重构
+Day 1: 调研 DeepSeek Harness 接入机制 → docs/dsh-integration-research.md
+Day 2: 实现 MCP Server (src/mcp-server.ts) + 更新 package.json
+Day 3: dsh-mcp-client cordis.yml 接入验证 (headless profile)
+Day 4: 创建 SKILL.md (L1 自动发现) + 完整 E2E 验证
+Day 5: 更新 NEXT_STEPS + BUG_FINDINGS + commit/push
 ```
 
 ### 下下周
 ```
-- Quiet Hours + Notification Actions
-- CI/CD Pipeline
-- 考虑 macOS/Linux 支持
+- 完成剩余 P0/P1 Bug 修复
+- 开始 P2 产品化（LICENSE + npm publish）
+- 评估 Center Window 增量更新重构
 ```
 
 ---
@@ -110,13 +112,28 @@ Day 5: 测试 + 文档 + 提交
 2. **Completion Semantic 与 Hook 解耦** — Hook ≠ Reliable completion，用 `CompletionReliability` 诚实表达
 3. **新 Agent 从 L1 开始** — Skill 是最低门槛，可逐步升级到 L3/L4
 4. **Core 不关心 Agent 是谁** — 只处理 Canonical Attention Events
+5. **DSH 接入等级确认** — 详见 `docs/dsh-integration-research.md`
+   - dsh **支持**：L1 SKILL.md（`dsh-skill-filesystem`）、L4 MCP（`dsh-mcp-client`）、L4 动态 Cordis Plugin
+   - dsh **不支持**：L2 Wrapper 约定、L3 stdin JSON Hook、Agent Identity 声明
+   - **推荐路径**：先实现 MCP Server（L4），再补充 SKILL.md（L1），二者叠加覆盖所有 DSH profile
+
+## 五、DSH 接入优先级（2026-08-31 调研结论）
+
+| 等级 | dsh 支持 | 实现难度 | 优先级 |
+|------|---------|---------|--------|
+| L4 MCP Server | ✅ `dsh-mcp-client` | 中（需新增 @modelcontextprotocol/sdk） | **P0**（首选） |
+| L1 SKILL.md | ✅ `dsh-skill-filesystem` | 低（只需写文档） | P1（补充） |
+| L4 动态 Plugin | ✅ `cordis_define/run` | 高（需理解 Cordis API） | P2（可选） |
+| L3 Hook | ❌ 不支持 | — | 不适用 |
+| L2 Wrapper | ❌ 无约定 | — | 不适用 |
+
 
 ---
 
-## 五、验证标准
+## 六、验证标准
 
 每次提交前确保:
-- [ ] `npm test` 198/198 通过
+- [ ] `npm test` 208/208 通过
 - [ ] `npm run build` 干净编译
 - [ ] E2E 验证: `agent-attention integration list` + `hook` 命令
 - [ ] 无 state.json 腐蚀
