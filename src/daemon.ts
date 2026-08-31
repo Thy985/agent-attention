@@ -9,6 +9,7 @@ import { getUiMode, resolveNativeUiPath } from './ui-host';
 import { startPipeServer, pushStateToClients, stopPipeServer, emitNotification, watchRegistryForNotifications, registerRpcCommand } from './pipeline/ipc';
 import { dispatchCommand } from './commands';
 import { log } from './logging';
+import { startObserver, stopObserver } from './observer/daemon-watch';
 
 export interface DaemonOptions {
   statePath: string;
@@ -110,6 +111,7 @@ export function createDaemon(options: DaemonOptions): Daemon {
   let pidCheckTimer: NodeJS.Timeout | null = null;
   let stopped = false;
   let lastStateHash = '';
+  let observerStop: (() => void) | null = null;
   const stateDir = path.dirname(options.statePath);
 
   const log = (msg: string) => daemonLog(msg, options.debug);
@@ -286,6 +288,13 @@ export function createDaemon(options: DaemonOptions): Daemon {
   }
   spawnTray();
 
+  // P4: Start Observer sidecar — watches agents continuously, writes observe.jsonl
+  try {
+    observerStop = startObserver(stateDir);
+  } catch (err) {
+    log(`observer start failed (non-fatal): ${err}`);
+  }
+
   // Push initial state immediately
   setTimeout(() => {
     if (!stopped) { pushStateToTrayFile(); if (options.uiExecutablePath) { pushStateToClients(stateDir); } }
@@ -304,6 +313,12 @@ export function createDaemon(options: DaemonOptions): Daemon {
       if (watcher) {
         await watcher.close();
         watcher = null;
+      }
+
+      // P4: Stop Observer sidecar
+      if (observerStop) {
+        try { observerStop(); } catch {}
+        observerStop = null;
       }
 
       // ── Graceful tray shutdown ──────────────────────────────────
