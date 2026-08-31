@@ -100,27 +100,44 @@ export async function notify(
           ? response.toLowerCase().trim()
           : '';
 
+        // P2-12 verify: observable log so the toast callback path can be
+        // distinguished from manual Center operations. Without this, a
+        // state change (e.g. unreadCount → 0) could be wrongly attributed
+        // to the toast Dismiss button when the user actually clicked
+        // mark-all-read inside the Center window.
+        console.warn(`[agent-notify] toast callback fired: action='${action}' raw='${typeof response === 'object' ? JSON.stringify(response) : String(response)}'`);
+
         if (action === 'view' || action === 'activate') {
           // Open Center window on toast click or "View" button
+          console.warn(`[agent-notify] opening Center via toast action='${action}'`);
           try {
             const { spawn } = require('child_process');
             const uiExecutable = resolveNativeUiPath();
             if (!uiExecutable) throw new Error('AgentAttention.UI.exe not found');
+            console.warn(`[agent-notify] spawn UI -OpenCenter: ${uiExecutable}`);
+            // P2-12 E2E fix: detached + unref so the Center window survives the
+            // agent-notify process exiting (agent-notify exits right after the
+            // toast callback resolves; without detached the child is torn down
+            // before it finishes starting).
             spawn(uiExecutable, [
               '-StatePath', path.join(stateDir, 'state.json'),
               '-RegistryPath', path.join(stateDir, 'agents.json'),
               '-CliPath', cliPath,
               '-TrayStatePath', path.join(stateDir, 'tray-state.json'),
               '-OpenCenter',
-            ], { windowsHide: true });
+            ], { windowsHide: true, detached: true, stdio: 'ignore' }).unref();
           } catch (err) {
             console.warn(`[agent-notify] failed to open Center: ${err instanceof Error ? err.message : String(err)}`);
           }
         } else if (action === 'dismiss') {
           // Mark all read on dismiss
+          console.warn(`[agent-notify] spawn mark-all-read via toast Dismiss: node ${cliPath} mark-all-read`);
           try {
             const { spawn } = require('child_process');
-            spawn('node', [cliPath, 'mark-all-read'], { windowsHide: true });
+            // P2-12 E2E fix: detached + unref so mark-all-read completes its
+            // state write even though agent-notify exits immediately after the
+            // toast callback resolves.
+            spawn('node', [cliPath, 'mark-all-read'], { windowsHide: true, detached: true, stdio: 'ignore' }).unref();
           } catch (err) {
             console.warn(`[agent-notify] failed to mark-all-read: ${err instanceof Error ? err.message : String(err)}`);
           }

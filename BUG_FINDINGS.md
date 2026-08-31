@@ -150,7 +150,12 @@
 | P3-7 | `pushStateToTrayFile` 加 `stopped` 守卫，防 stop 后重建 tray-state.json | `src/daemon.ts` | L1 断言 PASS |
 | 附带 | daemon.log 改惰性初始化 + error 监听，消除模块加载期与并行测试 worker 删目录的竞态（ENOENT flake 根因） | `src/daemon.ts` | L1：全套件连续 3 次 86/86 稳定 |
 
-### 本轮新修（2026-08-30）
+### 本轮新修（2026-08-31）
+
+| # | 修法 | 验证 |
+|---|---|---|
+| P2-12-E2E-a | toast 回调增加可观测日志（`toast callback fired: action='...'`），使事件来源可辨别——修复"unreadCount 变化无法区分 toast 回调与手动 Center 操作"的验证盲区 | L5：Dismiss 点击 → stdout `action='dismiss'` + spawn mark-all-read 日志，unreadCount 1→0；View 点击 → stdout `action='view'` + `-OpenCenter`，Center 窗口 `Agent Attention Center (1)` 持续 8s |
+| P2-12-E2E-b | toast 回调的 `spawn(mark-all-read)` / `spawn(UI -OpenCenter)` 加 `detached: true + stdio: 'ignore' + unref()`——修复 agent-notify `process.exit(0)` 立即终止未完成子进程、mark-all-read 写盘丢失 / Center 起不来的缺陷 | L2 复现（spawn 后 50ms 退出 → unreadCount 仍=1；等待退出 → =0）；修复后实机 Dismiss 2s 内 unreadCount=0、View 8s 窗口可见 |
 
 | # | 修法 | 验证 |
 |---|---|---|
@@ -171,6 +176,14 @@
 - **P2-8** Center 整树重建 → C# 增量刷新
 - **P2-9~P2-13** → C# 无对应代码
 - **P3-1~P3-5** → PowerShell 时代 bug，已随迁移消失
+
+### 验证汇总（2026-08-31，P2-12 toast 交互 E2E 修复轮）
+
+- **Dismiss 按钮 E2E（L5 实机+用户点击）**：`node dist/index.js completed "..."` → 用户点 toast Dismiss → stdout `toast callback fired: action='dismiss'` → spawn mark-all-read（detached）→ unreadCount 1→0、latest read=True
+- **View 按钮 E2E（L5 实机+用户点击）**：用户点 toast View → stdout `action='view'` → spawn UI -OpenCenter（detached）→ Center 窗口 `Agent Attention Center (1)` 弹窗，持续 8 秒可见
+- **snoretoast 参数结论**：本 vendor 版本**不支持 `-e`**（毫秒/秒均 0.2s 立即失败 code -1）；toast 显示时长由 Windows 系统默认控制（~2-4s），无法通过 snoretoast 延长
+- **C# 单实例结论**：`-OpenCenter` 新进程发现 tray mutex 占用即 `SignalExistingHost` 后自行退出；activation event → tray 的 `activationTimer` → `window.ShowAndActivate()` 链路验证可用（手动 Set 事件 → 窗口立即弹出）
+- **Jest**：208/208 PASS（26 suites）；daemon-ipc-notifications 偶发并行失败为 flaky（单独运行 6/6 通过，重跑全量通过）
 
 ### 验证汇总（2026-08-30，P3+P2-12+P3-9+P3-7 修复轮）
 
