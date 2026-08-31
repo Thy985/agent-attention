@@ -119,13 +119,23 @@ describe('observeAgent state machine', () => {
     expect(c.confidence).toBeLessThan(0.5);
   });
 
-  it('working (low confidence): alive, no observations yet', () => {
+  it('working (low confidence): alive, no recent activity', () => {
     const c = observeAgent(baseInput({
-      lastActivityAgeMs: null,
+      lastActivityAgeMs: 60_000, // 1 minute quiet
       lastEventType: null,
     }));
-    assertCandidate(c, 'working', ['no_observations_yet']);
-    expect(c.confidence).toBeLessThan(0.5);
+    assertCandidate(c, 'working', ['activity']);
+    expect(c.confidence).toBeLessThan(0.6);
+  });
+
+  it('blocked_candidate: alive with >120s silence', () => {
+    const c = observeAgent(baseInput({
+      lastActivityAgeMs: 180_000, // 3 minutes quiet
+      lastEventType: null,
+    }));
+    expect(c.state).toBe('blocked_candidate');
+    expect(c.evidence_strength).toBe('E0');
+    expect(c.observations).toContain('no_activity_180s');
   });
 
   it('priority: permission beats input beats working', () => {

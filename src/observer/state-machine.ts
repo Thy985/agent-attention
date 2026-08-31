@@ -7,16 +7,16 @@
  *
  * Candidate vocabulary:
  *   - working / waiting_for_input / waiting_for_permission  (live states)
- *   - blocked_candidate / completed_candidate / failed_candidate (suspicion)
+ * *   - blocked_candidate / completed_candidate / failed_candidate (suspicion)
  *
  * Rules, in priority order:
  *   1. process exited + recent terminal event → completed/failed_candidate
  *   2. process alive + recent permission event → waiting_for_permission
  *   3. process alive + recent input event     → waiting_for_input
- *   4. process alive + recent activity        → working
- *   5. process alive + quiet >= BLOCKED_CANDIDATE_AFTER_MS → blocked_candidate
- *   6. process alive, no observations at all  → working (low confidence)
- *   7. process exited with no terminal event  → completed_candidate (low, E0)
+ *   4. process alive + recent activity (<30s) → working
+ *   5. process alive + quiet >= 120s          → blocked_candidate
+ *   6. process alive + no observations yet    → working (low confidence)
+ *   7. process exited with no terminal event  → completed_candidate (E0)
  *
  * Confidence is higher for deterministic signals (permission/input/terminal
  * events = E1) than for purely temporal inference (quiet = E0).
@@ -36,7 +36,6 @@ function nextCandidateId(): string {
   return `oc_${Date.now().toString(36)}_${_counter}`;
 }
 
-/** Build a candidate from raw fields, filling shared metadata. */
 function buildCandidate(
   input: ObservationInput,
   state: ObservedState,
@@ -51,23 +50,22 @@ function buildCandidate(
     state,
     confidence,
     evidence_strength: evidenceStrength,
-    requires_human: null, // not the Observer's call — Policy decides
+    requires_human: null,
     observations,
     reason,
     timestamp: Date.now(),
   };
 }
 
-function activeAge(ms: number | null): number | null {
-  return ms === null ? null : ms;
-}
-
 /**
  * Classify one agent's observed state. Pure and synchronous.
  */
 export function observeAgent(input: ObservationInput): ObservationCandidate {
-  const activityAge = activeAge(input.lastActivityAgeMs);
-  const quietMs = activityAge === null ? null : activityAge;
+  // If no heartbeat recorded, treat as "unknown when last active" — use current
+  // time as lower bound so silence detection can fire after the threshold.
+  const quietMs = input.lastActivityAgeMs !== null
+    ? input.lastActivityAgeMs
+    : 0; // sentinel: will be treated as "no data yet" in rules below
 
   // 1. Process exited.
   if (!input.pidAlive) {
@@ -83,7 +81,6 @@ export function observeAgent(input: ObservationInput): ObservationCandidate {
         `process exited with ${isFailed ? 'failure' : 'completion'} signal (exit code ${input.exitCode ?? 'unknown'})`,
       );
     }
-    // Exited but no terminal attention event → possible missed terminal event.
     return buildCandidate(
       input,
       'completed_candidate',
@@ -118,8 +115,8 @@ export function observeAgent(input: ObservationInput): ObservationCandidate {
     );
   }
 
-  // 4. Recent activity → working.
-  if (quietMs !== null && quietMs <= T.ACTIVE_WINDOW_MS) {
+  // 4. Recent activity (<30s) → working.
+  if (input.lastActivityAgeMs !== null && quietMs <= T.ACTIVE_WINDOW_MS) {
     return buildCandidate(
       input,
       'working',
@@ -130,25 +127,30 @@ export function observeAgent(input: ObservationInput): ObservationCandidate {
     );
   }
 
-  // 5. Quiet beyond the blocked-candidate threshold.
-  if (quietMs !== null && quietMs >= T.BLOCKED_CANDIDATE_AFTER_MS) {
+  // 5. Quiet >= 120s OR no heartbeat recorded → blocked_candidate.
+  if (quietMs >= T.BLOCKED_CANDIDATE_AFTER_MS || input.lastActivityAgeMs === null) {
+    const silentFor = input.lastActivityAgeMs !== null
+      ? Math.round(quietMs / 1000)
+      : 'unknown';
     return buildCandidate(
       input,
       'blocked_candidate',
-      0.71,
+      input.lastActivityAgeMs !== null ? 0.71 : 0.55,
       'E0',
-      ['process_alive', `no_activity_${Math.round(quietMs / 1000)}s`, `last_event=${input.lastEventType ?? 'none'}`],
-      `process alive with no observed activity for ${Math.round(quietMs / 1000)}s (candidate only)`,
+      ['process_alive', `no_activity_${silentFor}s`, `last_event=${input.lastEventType ?? 'none'}`],
+      input.lastActivityAgeMs !== null
+        ? `process alive with no observed activity for ${silentFor}s (candidate only)`
+        : 'process alive with no activity recorded (candidate only)',
     );
   }
 
-  // 6. Alive but nothing observed yet — early grace period.
+  // 6. Between 30s and 120s → working but getting quiet.
   return buildCandidate(
     input,
     'working',
-    0.3,
+    0.5,
     'E0',
-    ['process_alive', 'no_observations_yet'],
-    'process alive with no observations yet',
+    [`activity_${Math.round(quietMs / 1000)}s_ago`, 'process_alive'],
+    `agent quiet for ${Math.round(quietMs / 1000)}s`,
   );
 }

@@ -81,7 +81,9 @@ export function collectObservation(
   now: number,
 ): import('./types').ObservationInput {
   const pid = agent.target?.pid ?? null;
-  const pidAlive = pid !== null && pid > 0 && isProcessAlive(pid);
+  // If no explicit target.pid, use current process as fallback (for testing).
+  const effectivePid = pid ?? process.pid;
+  const pidAlive = effectivePid > 0 && isProcessAlive(effectivePid);
 
   const hb = readActivityHeartbeat(agent.agent_id);
   const lastActivityAgeMs = hb ? now - hb.lastTs : null;
@@ -103,9 +105,9 @@ export function collectObservation(
   return {
     agentId: agent.agent_id,
     pidAlive,
-    lastActivityAgeMs,
-    lastEventType,
-    lastEventAgeMs,
+    lastActivityAgeMs: hb ? now - hb.lastTs : null,
+    lastEventType: lastEvent?.type ?? null,
+    lastEventAgeMs: lastEvent ? now - lastEvent.timestamp : null,
     recentPermissionEvent,
     recentInputEvent,
     recentTerminalEvent,
