@@ -8,6 +8,8 @@ import { readLogs, findCorrelated, wipeLog } from './logging';
 import { loadAdapters, discoverInstalled, type AgentAdapter } from './discover';
 import { clearUnread, markRead } from './state/AttentionState';
 import { resolveNativeUiPath } from './ui-host';
+import { runObserve } from './observer/cli';
+import { runAuditCli } from './auditor/cli';
 
 /** Run a PowerShell script from a temp file to avoid shell escaping issues. */
 function runPs(script: string, timeoutMs = 5000): string {
@@ -952,6 +954,8 @@ function main(): void {
     console.log('  agent target clear <id>              Clear target');
     console.log('  logs [n]         Show last N lines of daemon log');
     console.log('  doctor           Run health checks');
+    console.log('  observe [--watch]  Observe agent states (Attention Observer)');
+    console.log('  audit             Audit attention events for noise / missed (Attention Auditor)');
     console.log('  setup            Quick setup: install daemon + register agent');
     console.log('  discover         Scan PATH for installed agents');
     console.log('  integrate <id>   Enable integration for a discovered agent');
@@ -1056,6 +1060,12 @@ function main(): void {
       process.exit(1);
     }
     jumpToAgent(agentId);
+  } else if (command === 'observe') {
+    runObserve(args.slice(1));
+    return;
+  } else if (command === 'audit') {
+    runAuditCli(args.slice(1));
+    return;
   } else if (command === 'agent') {
     const sub1 = args[1];
     const sub2 = args[2];
