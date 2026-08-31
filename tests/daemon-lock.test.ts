@@ -54,6 +54,23 @@ describe('daemon single-instance lock ownership (P1-8)', () => {
     const body = src.slice(fnIdx, fnIdx + 400);
     expect(body).toMatch(/if \(stopped\) return;/);
   });
+
+  it('daemon exposes killTray() on the Daemon handle (P3-7)', () => {
+    const src = fs.readFileSync('src/daemon.ts', 'utf8');
+    // Interface declares it (with a doc comment between members).
+    expect(src).toMatch(/interface Daemon \{\s*stop\(\): Promise<void>;[\s\S]*?killTray\(\): void;/);
+    // Implementation provides it.
+    expect(src).toMatch(/killTray: \(\) => \{[\s\S]*?trayProc = null;[\s\S]*?process\.kill\(pid, 'SIGTERM'\)/);
+  });
+
+  it('uncaughtException kills the tray before exiting (P3-7)', () => {
+    const src = fs.readFileSync('src/daemon.ts', 'utf8');
+    const fnIdx = src.indexOf("process.on('uncaughtException'");
+    const body = src.slice(fnIdx, fnIdx + 700);
+    expect(body).toMatch(/daemon\.killTray\(\)/);
+    expect(body).toMatch(/unlinkSync\(trayStatePath\)/);
+    expect(body).toMatch(/process\.exit\(1\)/);
+  });
 });
 
 describe('killExistingDaemon PowerShell syntax (P2-1)', () => {

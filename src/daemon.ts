@@ -21,6 +21,8 @@ export interface DaemonOptions {
 
 export interface Daemon {
   stop(): Promise<void>;
+  /** P3-7: hard-crash tray termination — called from uncaughtException handler. */
+  killTray(): void;
 }
 
 const TRAY_STATE_POLL_MS = 1000;
@@ -332,6 +334,17 @@ export function createDaemon(options: DaemonOptions): Daemon {
         try { process.kill(pid, 'SIGTERM'); } catch {}
       }
     },
+    // P3-7 fix: on hard crash (uncaughtException) we cannot run the full async
+    // graceful stop, but we must still terminate the tray child so it does not
+    // become an orphaned ghost icon. Called from the process-level crash handler.
+    killTray: () => {
+      if (trayProc) {
+        const pid = trayProc.pid!;
+        trayProc = null;
+        try { process.kill(pid, 'SIGTERM'); } catch {}
+      }
+      try { clearTrayPid(options.trayPidPath); } catch {}
+    },
   };
 }
 
@@ -444,6 +457,10 @@ if (require.main === module) {
     try {
       const msg = err && err.stack ? err.stack : String(err);
       daemonLog(`FATAL uncaughtException: ${msg}`, debug);
+      // P3-7 fix: kill the tray child too — otherwise the tray outlives the
+      // crashed daemon as an orphaned ghost icon. File cleanup alone leaves
+      // a window where the tray keeps polling a deleted state file.
+      try { daemon.killTray(); } catch {}
       fs.unlinkSync(trayPidPath);
       fs.unlinkSync(trayStatePath);
     } catch {}
