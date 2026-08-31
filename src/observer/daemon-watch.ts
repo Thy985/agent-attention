@@ -27,6 +27,7 @@ import { observeAgent } from './state-machine';
 import { evaluatePolicy } from './policy';
 import { ObservationCandidate } from './types';
 import { log } from '../logging';
+import { emitNotification } from '../pipeline/ipc';
 
 const OBSERVE_INTERVAL_MS = 5000;
 const OBSERVE_JSONL_PATH = 'observe.jsonl';
@@ -84,6 +85,24 @@ export function runObservationPass(stateDir: string): void {
             rule: policy.rule,
           },
         });
+
+        // P4: Emit IPC notification so Center/Tray can react to the candidate
+        try {
+          emitNotification(stateDir, 'state-changed', {
+            type: 'observer-candidate',
+            agent_id: candidate.agent_id,
+            state: candidate.state,
+            priority: policy.priority,
+            candidate_id: candidate.candidate_id,
+          });
+        } catch (emitErr) {
+          log({
+            component: 'observer',
+            level: 'WARN',
+            event: 'observer_notification_emit_failed',
+            message: String(emitErr),
+          });
+        }
       }
     }
   } catch (err) {
