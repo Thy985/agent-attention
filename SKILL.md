@@ -72,10 +72,9 @@ agent-attention doctor                                        # 系统健康检�
   config:
     serverName: attention
     transport: stdio
-    command: node
-    args: ['dist/mcp-server.js']
-    env:
-      AGENT_ATTENTION_STATE_DIR: ~/.agent-attention
+    command: agent-attention-mcp   # 全局 bin（npm link agent-attention 后生成）
+    # ⚠️ 不要写 args: ['dist/mcp-server.js'] — dsh spawn 的 cwd 是用户启动 dsh 的目录（通常为 ~），
+    #    相对路径会报 Cannot find module；全局 bin 内部 resolve 到 dist/mcp-server.js，cwd 无关
 ```
 
 可用工具：

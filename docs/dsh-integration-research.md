@@ -36,7 +36,8 @@ dsh = Profile Launcher + Cordis Composition Engine
 
 **包**：`@deepseek-ai/dsh-mcp-client`
 
-**接入方式**：在 `cordis.yml` 添加一行 plugin row：
+**接入方式**：在 `cordis.yml` 添加一行 plugin row。
+**⚠️ 路径坑**：不要写 `args: ['dist/mcp-server.js']`——`dsh-mcp-client` spawn 子进程时 cwd 是 dsh 进程的启动目录（通常是 `~`），相对路径会报 `Cannot find module '~/dist/mcp-server.js'`。实机复现：从用户家目录运行 `node dist/mcp-server.js` 直接报 `Error: Cannot find module 'C:\Users\lenovo\dist\mcp-server.js'`。正确写法用全局 bin：
 
 ```yaml
 - id: mcp-agent-attention
@@ -44,10 +45,17 @@ dsh = Profile Launcher + Cordis Composition Engine
   config:
     serverName: attention        # 命名空间
     transport: stdio             # stdio 或 streamable-http
+    command: agent-attention-mcp # 全局 bin（npm link agent-attention 后生成）
+    # 不需要 args；全局 bin 内部 resolve 到 dist/mcp-server.js，cwd 无关
+```
+
+```yaml
+# ❌ 错误：相对路径依赖用户启动 dsh 的 cwd
     command: node
-    args: ['dist/mcp-server.js'] # Agent Attention 提供的 MCP server
-    env:
-      AGENT_ATTENTION_STATE_DIR: ~/.agent-attention
+    args: ['dist/mcp-server.js']
+
+# ✅ 正确：全局 bin 从任何 cwd 都能解析
+    command: agent-attention-mcp
 ```
 
 **效果**：模型通过工具名 `attention__get_events`、`attention__clear_events`、`attention__query_agent` 等访问。命名规范与 Claude Code / Codex 一致（`mcp__<serverName>__<rawName>`）。
