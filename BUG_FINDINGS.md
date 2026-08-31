@@ -154,6 +154,7 @@
 
 | # | 修法 | 验证 |
 |---|---|---|
+| P3-7 | `Daemon` 接口新增 `killTray()`（SIGTERM trayProc + 清 tray.pid）；`uncaughtException` 处理先 `daemon.killTray()` 再释放锁退出，杜绝孤儿幽灵图标（stopped 守卫此前已修，`daemon.ts:163`） | L1：`tests/daemon-lock.test.ts` 新增 3 条断言，12/12 PASS；L3：硬杀 daemon → tray 随退无孤儿，`start` 恢复单实例（1 daemon + 1 tray） |
 | P3-9 | `restart()` 去掉固定 1s `setTimeout` 延迟，改为 `sleepSync(100)` 轮询 `getDaemonPids()` 至空（上限 8s）后再 `startDaemon()`；旧 daemon 未按时退出时警告后仍启动（由 daemon 自持锁仲裁） | L1：`tests/daemon-lock.test.ts` 新增 2 条断言（poll 而非固定延迟 + 8s 上限警告），10/10 PASS |
 | P2-12 | `notify()` 增加硬性超时保护：`Promise.race` 风格的 `done()` + `setTimeout(hardTimeout)`，默认 30s，`AGENT_ATTENTION_NOTIFY_TIMEOUT_MS` 可覆盖；`agent-notify` 进程永不在 toast 交互上无限挂起（node-notifier 的 wait/timeout 在 Windows 被 toaster 标志过滤，无法自限时） | L1：jest mock node-notifier 永不回调，`notify()` 100/50/25ms 超时均按时返回（<2s）；L2：实机 `agent-notify` 2.5s 返回 exit=0 事件落盘 |
 | P3-6 | `doctor` Sound/Toast 文案修正：snoretoast → node-notifier；Sound 改为依赖 daemon 运行状态而非单纯 platform 判断 | L2：`agent-attention doctor` 输出准确 |
@@ -171,9 +172,11 @@
 - **P2-9~P2-13** → C# 无对应代码
 - **P3-1~P3-5** → PowerShell 时代 bug，已随迁移消失
 
-### 验证汇总（2026-08-30，P3+P2-12+P3-9 修复轮）
+### 验证汇总（2026-08-30，P3+P2-12+P3-9+P3-7 修复轮）
 
-- Jest 单测：**206/206 PASS**（26 suites，连续稳定）
+- Jest 单测：**208/208 PASS**（26 suites，连续稳定）
+- P3-7 回归：`tests/daemon-lock.test.ts` 12/12（killTray 声明/实现 + uncaughtException 调用）
+- P3-7 实机：硬杀 daemon → tray 无孤儿 → `start` 恢复单实例全绿
 - P3-9 回归：`tests/daemon-lock.test.ts` 10/10（restart 轮询旧 daemon 退出而非固定 1s）
 - P2-12 回归：`tests/p2-12-timeout.test.ts` 6/6（mock node-notifier 永不回调，超时保护按时返回）
 - P2-12 实机 E2E：`AGENT_ATTENTION_NOTIFY_TIMEOUT_MS=2000 node dist/index.js completed "..."` → 2.5s 返回，exit=0，事件正确落盘
