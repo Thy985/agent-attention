@@ -32,7 +32,7 @@ const DEFAULT_CONFIG: AgentAttentionConfig = {
  * Returns defaults on any error (missing file, parse error, etc.).
  */
 export function loadConfig(): AgentAttentionConfig {
-  const dir = path.join(os.homedir(), '.agent-attention');
+  const dir = process.env.AGENT_ATTENTION_HOME || path.join(os.homedir(), '.agent-attention');
   const filePath = path.join(dir, 'config.yaml');
 
   if (!fs.existsSync(filePath)) {

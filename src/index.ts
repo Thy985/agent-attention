@@ -9,10 +9,11 @@ import { recordEvent } from './state';
 import { log, generateCorrelationId } from './logging';
 import { autoDetectAndRegister } from './registry';
 import { checkCompliance } from './discover';
+import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-const STATE_DIR = path.join(os.homedir(), '.agent-attention');
+const STATE_DIR = process.env.AGENT_ATTENTION_HOME || path.join(os.homedir(), '.agent-attention');
 const STATE_PATH = path.join(STATE_DIR, 'state.json');
 
 /**
@@ -45,6 +46,7 @@ function extractArgs(argv: string[]): { event: string; message: string } {
 
 async function main(): Promise<void> {
   const { event: eventName, message } = extractArgs(hideBin(process.argv));
+  const correlationId = generateCorrelationId();
 
   if (!eventName || !message) {
     console.error('Usage: agent-notify <event> <message>');
@@ -68,11 +70,13 @@ async function main(): Promise<void> {
   }
 
   if (!config.enabled) {
+    log({ component: 'cli', level: 'INFO', event: 'gated', message: `notification suppressed: disabled`, correlation_id: correlationId, context: { event: eventName, reason: 'disabled' } });
     process.exit(0);
   }
 
   const eventEnabled = config.events?.[eventName] ?? true;
   if (!eventEnabled) {
+    log({ component: 'cli', level: 'INFO', event: 'gated', message: `notification suppressed: ${eventName} disabled`, correlation_id: correlationId, context: { event: eventName, reason: 'event-disabled' } });
     process.exit(0);
   }
 
@@ -91,14 +95,17 @@ async function main(): Promise<void> {
   // even when each process has a unique registration id (hostname-pid).
   const dedupEnabled = shouldNotify(getDedupAgentId(), eventName, message);
   if (!dedupEnabled) {
+    log({ component: 'cli', level: 'INFO', event: 'gated', message: `notification suppressed: dedup`, correlation_id: correlationId, context: { event: eventName, reason: 'dedup' } });
     process.exit(0);
   }
 
   // P0 fix: state must be written BEFORE notify so a state-write failure
   // never produces an orphaned toast. Notification is best-effort: if the
   // toast fails the event is still recorded in state.json.
-  let correlationId = generateCorrelationId();
   try {
+    // F2 (package smoke): ensure the state dir exists so agent-notify works on a
+    // fresh install before the daemon/installer has ever run (AC-04).
+    fs.mkdirSync(STATE_DIR, { recursive: true });
     const priority = EVENT_PRIORITY[eventName as EventName];
     log({ component: 'cli', level: 'INFO', event: 'notify_called', message: `${eventName}: ${message.substring(0, 80)}`, correlation_id: correlationId, context: { agent_id: agentId, event: eventName, priority } });
     // AC-06: compliance tracking — log whether this notification follows the protocol

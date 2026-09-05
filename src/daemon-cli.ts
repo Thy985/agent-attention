@@ -1102,7 +1102,6 @@ function main(): void {
     } else if (sub1 === 'cleanup') {
       cleanupAgents();
     } else if (sub1 === 'target') {
-    } else if (sub1 === 'target') {
       if (!sub2) {
         console.log('Usage: agent-attention agent target <set|clear> <id> [--pid <n>]');
         process.exit(1);

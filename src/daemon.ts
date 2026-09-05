@@ -44,10 +44,14 @@ function atomicWriteFileSync(filePath: string, contents: string): void {
 
 // Module-level logger — writable from both createDaemon() and process handlers.
 // Lazy-init: opening the stream at module load raced with parallel test
-// workers that delete ~/.agent-attention between mkdirSync and open.
+// workers that delete AGENT_ATTENTION_HOME between mkdirSync and open.
+// AGENT_ATTENTION_HOME is the `.agent-attention` dir itself (see logging.ts).
 const LOG_MAX_LINES = 10_000;
 let _logFile: fs.WriteStream | null = null;
-const LOG_PATH = path.join(os.homedir(), '.agent-attention', 'daemon.log');
+const LOG_PATH = path.join(
+  process.env.AGENT_ATTENTION_HOME || path.join(os.homedir(), '.agent-attention'),
+  'daemon.log',
+);
 function getLogFile(): fs.WriteStream {
   if (!_logFile || _logFile.destroyed) {
     try { fs.mkdirSync(path.dirname(LOG_PATH), { recursive: true }); } catch {}
@@ -367,8 +371,8 @@ export function createDaemon(options: DaemonOptions): Daemon {
 // CLI entry point
 // ---------------------------------------------------------------------------
 if (require.main === module) {
-  const home = os.homedir();
-  const stateDir = path.join(home, '.agent-attention');
+  const home    = process.env.AGENT_ATTENTION_HOME || path.join(os.homedir(), '.agent-attention');
+  const stateDir = home; // AGENT_ATTENTION_HOME IS the .agent-attention dir (see logging.ts)
   const statePath    = path.join(stateDir, 'state.json');
   const trayStatePath = path.join(stateDir, 'tray-state.json');
   const trayPidPath   = path.join(stateDir, 'tray.pid');
