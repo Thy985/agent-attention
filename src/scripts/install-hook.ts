@@ -47,7 +47,14 @@ interface HooksConfig {
   hooks: Record<string, HookEntry[]>;
 }
 
-/** Build the hooks.json content. */
+/**
+ * Build the hooks.json content.
+ *
+ * IMPORTANT: the `command` MUST be the `hook` subcommand of daemon-cli, NOT a
+ * bare `node <daemon-cli.js>`. daemon-cli routes lifecycle-event handling to
+ * runHook() only under the `hook` subcommand; without it the process would fall
+ * into the CLI help/parse path and never read the hook payload off stdin.
+ */
 function buildHooksConfig(hookPath: string): HooksConfig {
   return {
     hooks: {
@@ -56,7 +63,7 @@ function buildHooksConfig(hookPath: string): HooksConfig {
           hooks: [
             {
               type: 'command',
-              command: `node "${hookPath}"`,
+              command: `node "${hookPath}" hook`,
               statusMessage: 'Agent Attention — recording session end',
               timeout: 5,
             },
@@ -68,7 +75,7 @@ function buildHooksConfig(hookPath: string): HooksConfig {
           hooks: [
             {
               type: 'command',
-              command: `node "${hookPath}" --session-start`,
+              command: `node "${hookPath}" hook`,
               statusMessage: 'Agent Attention — session started',
               timeout: 3,
             },

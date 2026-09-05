@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${ANTHROPIC_CLI_AGENT_ATTENTION_HOOK_PATH}\"",
+            "command": "node \"${ANTHROPIC_CLI_AGENT_ATTENTION_HOOK_PATH}\" hook",
             "statusMessage": "Agent Attention — recording session end",
             "timeout": 5
           }
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${ANTHROPIC_CLI_AGENT_ATTENTION_HOOK_PATH}\" --session-start",
+            "command": "node \"${ANTHROPIC_CLI_AGENT_ATTENTION_HOOK_PATH}\" hook --session-start",
             "statusMessage": "Agent Attention — session started",
             "timeout": 3
           }

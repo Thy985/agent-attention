@@ -925,7 +925,145 @@ function runSetup(): void {
 }
 
 
-/** Wipe the runtime log file (for testing). */
+/**
+ * `agent-attention setup hook` — install / uninstall / verify the Claude Code
+ * hook by writing into the host's `.claude/settings.json` (Claude Code's native
+ * hook registry). Mirrors the evolver setup-hooks pattern: one command to wire
+ * the agent runtime to Agent Attention.
+ *
+ * Unlike `src/scripts/install-hook.ts` (project-scoped, no verify/uninstall),
+ * this adapter targets the user-level `~/.claude/settings.json` by default and
+ * supports `--uninstall` and `--verify`.
+ *
+ * Usage:
+ *   agent-attention setup hook [--global|--project <path>] [--uninstall] [--verify]
+ */
+interface CC_HooksConfig {
+  hooks?: Record<string, CC_HookGroup[]>;
+}
+
+type CC_HookGroup = {
+  matcher?: string;
+  hooks: Array<{ type: string; command: string; statusMessage?: string; timeout?: number }>;
+};
+
+function ccSettingsPath(projectDir: string | undefined): string {
+  if (projectDir) return path.join(projectDir, '.claude', 'settings.json');
+  return path.join(os.homedir(), '.claude', 'settings.json');
+}
+
+function ccReadSettings(settingsPath: string): CC_HooksConfig {
+  try {
+    if (!fs.existsSync(settingsPath)) return {};
+    const raw = fs.readFileSync(settingsPath, 'utf-8');
+    const parsed = JSON.parse(raw);
+    return (parsed && typeof parsed === 'object') ? parsed : {};
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`Cannot parse ${settingsPath}: ${msg}`);
+  }
+}
+
+function ccWriteSettings(settingsPath: string, cfg: CC_HooksConfig): void {
+  fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+  fs.writeFileSync(settingsPath, JSON.stringify(cfg, null, 2) + '\n', 'utf-8');
+}
+
+/** Resolve the absolute path to dist/daemon-cli.js (the hook host). */
+function ccHookPath(): string {
+  return path.resolve(__dirname, 'daemon-cli.js');
+}
+
+/** Build the SessionStart / Stop hook entries. `hook` subcommand is required so
+ *  daemon-cli routes the lifecycle payload to runHook() (NOT the CLI parse path). */
+function ccBuildEntries(hookPath: string): Record<string, CC_HookGroup[]> {
+  const mk = (flag: string, msg: string, timeout: number) => ({
+    hooks: [{ type: 'command', command: `node "${hookPath}" hook${flag}`, statusMessage: msg, timeout }],
+  });
+  return {
+    SessionStart: [mk(' --session-start', 'Agent Attention — session started', 10)],
+    Stop: [mk('', 'Agent Attention — session end', 10)],
+  };
+}
+
+function isSetupOurHook(groups: CC_HookGroup[] | undefined): boolean {
+  if (!groups || !Array.isArray(groups)) return false;
+  return groups.some((g) => (g.hooks || []).some((h) => (h.command || '').includes('daemon-cli.js')));
+}
+
+function runSetupHook(argv: string[]): void {
+  const uninstall = argv.includes('--uninstall') || argv.includes('-u');
+  const verifyOnly = argv.includes('--verify') || argv.includes('-v');
+  const projectIdx = argv.indexOf('--project');
+  const projectDir = projectIdx >= 0 ? argv[projectIdx + 1] : undefined;
+  if (projectIdx >= 0 && !projectDir) {
+    console.error('Usage: agent-attention setup hook [--project <dir>] [--uninstall] [--verify]');
+    process.exit(1);
+  }
+
+  const settingsPath = ccSettingsPath(projectDir);
+  const hookPath = ccHookPath();
+
+  // --verify: read-only health check; never modifies files.
+  if (verifyOnly) {
+    const hostOk = fs.existsSync(hookPath);
+    const cfg = ccReadSettings(settingsPath);
+    const sessionStartOk = isSetupOurHook(cfg.hooks?.['SessionStart']);
+    const stopOk = isSetupOurHook(cfg.hooks?.['Stop']);
+    console.log('Agent Attention hook --verify');
+    console.log(`  config    : ${settingsPath}  ${fs.existsSync(settingsPath) ? '' : '(missing)'}`);
+    console.log(`  hook host : ${hookPath}  ${hostOk ? '(ok)' : '(MISSING)'}`);
+    console.log(`  SessionStart : ${sessionStartOk ? 'installed' : 'NOT installed'}`);
+    console.log(`  Stop         : ${stopOk ? 'installed' : 'NOT installed'}`);
+    let failures = 0;
+    if (!hostOk) { console.error('  status: FAIL — hook host missing'); failures++; }
+    if (!sessionStartOk) { console.error('  status: FAIL — SessionStart hook not registered'); failures++; }
+    if (!stopOk) { console.error('  status: FAIL — Stop hook not registered'); failures++; }
+    if (failures > 0) process.exit(1);
+    console.log('  status: OK');
+    process.exit(0);
+  }
+
+  // Uninstall: remove only Agent-Attention-owned hook entries, keep the rest.
+  if (uninstall) {
+    const cfg = ccReadSettings(settingsPath);
+    const hooks = cfg.hooks || {};
+    const before = JSON.stringify(hooks);
+    for (const evt of ['SessionStart', 'Stop']) {
+      if (Array.isArray(hooks[evt])) {
+        hooks[evt] = hooks[evt].filter(
+          (g) => !(g.hooks || []).some((h) => (h.command || '').includes('daemon-cli.js')),
+        );
+        if (hooks[evt].length === 0) delete hooks[evt];
+      }
+    }
+    if (JSON.stringify(hooks) === before && !fs.existsSync(settingsPath)) {
+      console.log(`No Agent Attention hooks present at ${settingsPath}`);
+      process.exit(0);
+    }
+    ccWriteSettings(settingsPath, cfg);
+    console.log(`Uninstalled Agent Attention hooks from ${settingsPath}`);
+    process.exit(0);
+  }
+
+  // Install: merge into SessionStart/Stop without clobbering other plugins' hooks.
+  const cfg = ccReadSettings(settingsPath);
+  if (!cfg.hooks) cfg.hooks = {};
+  const entries = ccBuildEntries(hookPath);
+  const merged = { ...cfg };
+  merged.hooks = { ...(cfg.hooks || {}) };
+  for (const [evt, newGroups] of Object.entries(entries)) {
+    const existing = (cfg.hooks || {})[evt];
+    if (isSetupOurHook(existing)) continue; // already installed -> idempotent
+    const base = existing && Array.isArray(existing) ? existing : [];
+    merged.hooks[evt] = [...base, ...newGroups];
+  }
+  ccWriteSettings(settingsPath, merged);
+  console.log(`Installed Agent Attention hook at ${settingsPath}`);
+  console.log(`  SessionStart : node "${hookPath}" hook --session-start`);
+  console.log(`  Stop         : node "${hookPath}" hook`);
+  process.exit(0);
+}
 function wipeLogs(): void {
   wipeLog();
   console.log('Runtime log wiped.');
@@ -957,13 +1095,17 @@ function main(): void {
     console.log('  observe [--watch]  Observe agent states (Attention Observer)');
     console.log('  audit             Audit attention events for noise / missed (Attention Auditor)');
     console.log('  setup            Quick setup: install daemon + register agent');
+    console.log('  setup hook       Install/verify Claude Code hook (--uninstall, --verify)');
     console.log('  discover         Scan PATH for installed agents');
     console.log('  integrate <id>   Enable integration for a discovered agent');
     console.log('  hook             Handle Claude Code hook stdin (internal — do not call manually)');
     process.exit(0);
   }
 
-  if (command === 'setup') { runSetup(); return; }
+  if (command === 'setup') {
+    if (subcommand === 'hook') { runSetupHook(args.slice(2)); return; }
+    runSetup(); return;
+  }
   if (command === 'discover') { runDiscover(); return; }
   if (command === 'integrate') { runIntegrate(args[1] || ''); return; }
 

@@ -211,3 +211,18 @@ Only claim Complete when 所有 AC of that 地平线 有真实环境证据。
 **H1 Exit Gate 判定**：F1（Target Jump）、F2（Package 首装）不再标 dead/悬空；State 原子写、Daemon 单实例、门控 reason 均达实机验证。**H1 满足 Roadmap §2 Exit Gate（附表全绿 L1/L2，F1/F2 非 dead）。**
 
 > **H1 全部 7 项完成**。Roadmap H1 段验收：基线 241 全绿 + build clean；F1/F2 已修已验；Daemon 单实例 + home 一致性已修；门控带 reason；原子写复核通过；Verification Map 原 F1/F2/daemon FAIL 项均已转 PASS。剩余两项明确的环境/打包 NOTE（无 watchdog、C# UI 需 .NET 部署）已在 §7 诚实标注，归入后续 H1-3 打包/H2 子项。
+
+### H-L4a Hook 自动接线 — `setup hook`（2026-09-05）
+
+背景：借鉴 evolver `setup-hooks` 模式，让 agent-attention 的 Claude Code hook（`src/hooks.ts` / `daemon-cli runHook`）被真正接线。此前 Roadmap L4「Agent 集成/Skill」为 **NOT VERIFIED**，且有两个悬空 bug。
+
+| 项 | 结果 | 证据 |
+|----|------|------|
+| **Bug A：缺 `hook` 子命令** | ✅ 修复 | `install-hook.ts` `buildHooksConfig` 原生成 `node "<daemon-cli.js>"`（无 `hook`）→ hook 触发走 CLI 解析打印帮助。已改为 `node "<…>daemon-cli.js" hook`。`hooks/hooks.json` 模板同步。 |
+| **Bug B：悬空 env 占位** | ✅ 已修 | `install-hook.ts` 不再用 `${ANTHROPIC_CLI_AGENT_ATTENTION_HOOK_PATH}`，改为 build 时 resolve 绝对路径；`hooks/hooks.json` 模板保留占位但补上 `hook` 子命令（作为显式注入点示例）。 |
+| **新增 `setup hook` 子命令** | ✅ L2/L3 验证 | `daemon-cli.ts` `runSetupHook()`（Claude Code adapter，`ccSettingsPath`/`ccRead`/`ccWrite`/`ccBuildEntries`）：`--project <dir>` 写 `.claude/settings.json`；`--verify` 只读校验（host 存在 + SessionStart/Stop 已装）；`--uninstall` 仅删本产品条目保留他插件。实测：merge 保留 `other-plugin`（Stop groups=2）、幂等（重跑仍=2）、verify exit 0、uninstall 只删我们的（留其他、移除 SessionStart） |
+| **L4 Hook→CLI→State 全链路** | ✅ 真实 CLI（非 mock） | 三组 stdin payload 实测：`exitStatus:0,turns:3`→`completed`/P2；`exitStatus:1`→`failed`/P1；`exitStatus:2`→`input_required`/P0；空 stdin→exit 0 不 crash、不写 State（符合「hook 不得拖垮 Claude」） |
+| **回归** | ✅ PASS | `npm run build` clean；241/241 全绿；已清理测试副作用 `.hooktest` 与误建的 repo `.claude` |
+| **诚实边界** | ⚠️ | 真实 end-user Claude Code 会话端到端仍需真实 Claude（不可自动化）；`setup hook` 默认写 `~/.claude/`（用户级），测试仅在 `--project` 临时目录验证、**未污染真实 ~/.claude**；真实全局接入需用户显式运行。 |
+
+> 意义：解锁 Roadmap L4「Agent 集成/Skill」「只做单测 mock」的缺口——现在有了一条 **真实 CLI 链路**（Claude Stop hook → `daemon-cli hook` → State），从「单测 mock」升级为「真实子进程链路（L2/L3）已验证 | 真实 Claude 会话待人工」。对应 Verification Map L4 行状态部分转实。
