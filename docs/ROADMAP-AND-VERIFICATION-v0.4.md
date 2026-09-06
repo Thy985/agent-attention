@@ -138,6 +138,25 @@ Only claim Complete when 所有 AC of that 地平线 有真实环境证据。
 
 ---
 
+## 5b. H2-0 执行证据（实机 L3，2026-09-06）
+
+> H2-0（Real Windows Integration Gate）首轮完成。证据均为真实 Windows 环境（非 mock）。
+
+| 验证项 | 结果 | 证据 |
+|------|------|------|
+| S1 self-contained 发布 | ✅ | `dotnet publish -r win-x64 --self-contained true` 产物含 `includedFrameworks`，在 `env -i`（无 DOTNET_ROOT/PATH dotnet）下可运行；`package.json publish:ui` 已改 self-contained |
+| S3 daemon→UI 启动 | ✅ | UI 常驻、`ipc client connected`、`tray-state.json` 更新；修复了 daemon 对 exit code 0 无限重启的 bug（`code!==0` 才 respawn） |
+| S4 tray/未读传播 | ✅ | 发送事件后 `state` 与 `tray-state` unreadCount 0→1 一致 |
+| S5 Mark-All-Read | ✅ | mark 后 state 与 tray-state 双 0，all read=true |
+| **S6 Target Jump** | ⚠️ **FAIL（根因定位）** | `daemon-cli jump` rc0 但 `GetForegroundWindow()` 未命中；根因：Windows 前台锁——Node 派生 PowerShell 子进程无法 `SetForegroundWindow`；**直接进程内调用则成功**。真实 L3 功能缺陷，需设计级修复 |
+| S7 daemon restart→UI 恢复 | ✅ | restart 后 1 个新 UI（pid=8760）与 `tray.pid` 精确匹配 |
+| S8 npm pack→clean install | ✅ | tarball 含 self-contained UI.exe；隔离 prefix 安装成功；installed `agent-notify` 执行并写 State |
+| S9 全量回归 | ✅ | `npm test` 241/241（29 suites），`npm run build` clean，无回归 |
+
+**H2-0 遗留**：S6 Jump FAIL 是当前唯一未达标验收项——把「点击跳回 Agent」从"死代码判定"抬升为"已测量的真实 L3 失败"；修复方向待评审（前台锁规避 `AllowSetForegroundWindow`/有前台权限进程 或 撤回 Jump 语义）。L5 不可自动化，待人工。
+
+---
+
 ## 6. 借鉴来源速查表（研究一行式）
 
 | 借鉴来源 | 一句话要点 | 落到 Roadmap | 关键文件 |
@@ -150,107 +169,3 @@ Only claim Complete when 所有 AC of that 地平线 有真实环境证据。
 | Orca | 门控带 `reason` / 移动端 seq watermark | H1-5 / H3-14 | `src/main/ipc/notifications.ts` |
 
 > 五利来源均可本地复读：`/tmp/proj-ding-ding`、`/tmp/proj-agenttray`、`/tmp/proj-ai-agent-notifier`、`/tmp/proj-agent-indicator`、`/tmp/proj-agent-notifier`。
----
-
-## 7. H1 首轮执行记录（2026-09-05，绑定验证）
-
-| 项 | 结果 | 证据 |
-|----|------|------|
-| **H1-1 测试基线** | ✅ PASS | `npm test` 241/241（29 suites）+ `npm run build` clean |
-| **H1-2 F1 Target Jump** | ✅ 修复 + L3 PASS | ① 修 `src/daemon-cli.ts` 重复空 `else if (sub1==='target'){}` 分支 → `agent target set` 此前是**死路径**（exit 0 但 target 不落盘）。修复后 `target set --pid` 正确写入 registry。② 端到端 L3 Oracle：`target set test-jump --pid <notepad pid>` → `jump test-jump` → `GetWindowThreadProcessId(GetForegroundWindow())==targetPid` **ORACLE=PASS**。③ Direct technique 复验：`ShowWindow(3)+ALT+SetForegroundWindow` 直接调用返回 1 且焦点命中。`tests/jump` 7 通过、全量 241 通过 |
-| **H1-3 F2 发布包冒烟** | ✅ 修复 2 处 | fresh home（`AGENT_ATTENTION_HOME` 隔离）+ 无 daemon，`agent-notify completed` 此前 `ENOENT: state.json.tmp`（目录不存在）。修复：① `src/index.ts` 加 `fs.mkdirSync(STATE_DIR,{recursive:true})`（AC-04 违反）② `src/index.ts` 的 `STATE_DIR` 未尊重 `AGENT_ATTENTION_HOME`（全仓唯一不一致入口），改为 `process.env.AGENT_ATTENTION_HOME || ~/.agent-attention`。修复后 State 成功写入隔离根目录，exit=0，241 全绿 |
-
-**本轮结论**：H1 的三个最核心止损项（F1 跳转链路、F2 首装可跑）已实机修复并验证；`src/daemon-cli.ts` 与 `src/index.ts` 有未提交改动，保留待 H1 完成后统一评审提交。
-
-### H1-4 daemon 单实例 + 一致 home（2026-09-05）
-
-| 项 | 结果 | 证据 |
-|----|------|------|
-| **daemon 进程级 Mutex（daemon.lock）** | ✅ 已实现 + L3 验证 | P1-8 已实现 `O_EXCL('wx') + stale-steal`（`daemon.ts:398-424`），`daemon_instances=1` invariant 成立。实测 `daemon-cli daemon start`×3 连续调用后，仅保留 **1 个** `daemon.js` 进程（`getDaemonPids` 后先杀再起 + `daemon.lock` 兜底）。`daemon.lock` 文件内为持有者 PID |
-| **daemon.ts 尊重 AGENT_ATTENTION_HOME** | ✅ 已修复 | `src/daemon.ts` `main` 与 `LOG_PATH` 原用 `os.homedir()`（全仓唯一硬编码），隔离 home 下 daemon 状态错落真实 `~/.agent-attention`。已统一改为 `AGENT_ATTENTION_HOME || ~/.agent-attention`。修复后隔离目录实测：`daemon.lock`/`daemon.log`/`ipc-port.txt`/`ipc-auth.secret`/`tray-state.json`/`logs/runtime.jsonl` 全部正确落在隔离根 |
-| **daemon + Tray（C# UI）完整生命周期** | ⚠️ NOT VERIFIED（环境限制） | `daemon.log`：`tray stderr: You must install or update .NET ...`；根因 `AgentAttention.UI.exe` 由自 `dotnet publish --self-contained false` 构建，依赖系统 .NET runtime；本机 runtime 安装在 mise 的 `dotnet-root/shared/.../10.0.11` 但**未注册进 daemon 进程的 PATH/默认 hostfxr 位置**，所以 Tray 起不来。**环境/打包约束**，非单实例逻辑缺陷；属 H1-3 F2 打包方向待办 |
-| **回归** | ✅ 待 | 需 `npm test` 全量（此项改动 daemon.ts，不影响单测但按门槛重跑） |
-
-> 诚实结论：H1-4 的**单实例（daemon.lock 唯一真）**核心已验证达成；「点击托盘 → C# Center/Tray」的完整 TUI 生命周期因本机 .NET 部署未能完整演示，标记为环境 NOT VERIFIED，并指示出修正方向（UI 用 self-contained 发布，或 daemon 启动前把 mise dotnet 加入 PATH / 用 `DOTNET_ROOT` 指定）→ 列入 H1-3/H2 打包/环境子项。
-
-### H1-5 门控带 reason（2026-09-05）
-
-| 项 | 结果 | 证据 |
-|----|------|------|
-| **「不发」分支可诊断** | ✅ 修复 + L3 验证 | 对齐 Orca/ding-ding「不发也留 reason」。`src/index.ts` 三个静默 `exit(0)` 分支（`disabled`/`event-disabled`/`dedup`）现均写 `event:"gated"` + `context.reason` 结构化日志。实测三场景各命中对应 reason：`disabled`、`event-disabled`、`dedup` |
-| **correlationId 前置** | ✅ | `generateCorrelationId()` 移至 `main` 顶部，所有 gated 分支可带上 `correlation_id` 追踪链 |
-| **config.ts 尊重 AGENT_ATTENTION_HOME** | ✅ 修复 | `src/config/index.ts` 原硬编码 `os.homedir()`（第三处同类不一致），统一为 `AGENT_ATTENTION_HOME \|\| ~/.agent-attention` |
-| **回归** | ✅ PASS | 241/241 + build clean；隔离 home 实测 |
-
-> 至此 H1 共 5/7 项完成（H1-1 基线、H1-2 F1 Jump、H1-3 F2 冒烟+home一致性、H1-4 daemon 单实例+home一致性、H1-5 门控 reason）。剩余 H1-6 原子写复核、H1-7 Verification Map 固化。
-
-### H1-6 原子写 + 并发复核（2026-09-05）
-
-| 项 | 结果 | 证据 |
-|----|------|------|
-| **State/daemon/registry 三处原子写** | ✅ 已实现 | `state/AttentionState.ts:110` `atomicWrite`（随机 tmp + renameSync + EPERM/EACCES/EBUSY backoff 重试）；`daemon.ts:34` `atomicWriteFileSync`（随机 tmp + rename）；`registry.ts:69-73`（随机 tmp + rename）。system写完仍保持 tmp+rename |
-| **并发 20 recordEvent** | ✅ 20/20 无损 | 纯 State 层并发 20 个 `recordEvent`（去 toast 已隔离）→ `events=20` 完整、`leftover_tmp=0`、无损坏（`state.json` 可 parse） |
-| **观察（不扩大为缺陷）** | ⚠️ note | `agent-notify` 10 个真实并发进程曾写进 8 条（丢失 2）。纯 State 并发 20/20 通过 → 该 8/10 出自 agent-notify 的多进程 side-effect（并发弹 node-notifier toast 的时序/进程竞争），**非 atomicWrite 本身损坏**。列为观察项，不判定为原子性缺陷 |
-| **回归** | ✅ | 241/241 + build clean |
-
-> 结论：H1-6 的「原子写保不损坏 + 无遗留 tmp」在 State 层复核通过。agent-notify 进程级并发的计数差异记录为观察项，若后续重现再定位。
-
-### H1-7 Verification Map 固化（2026-09-05）—— H1 完成后 Oracle 状态总览
-
-对照 SYSTEM_MAP §7 Verification Map，本轮 H1 后的真实状态：
-
-| Node | Invariant / Oracle | 本轮前 | H1 后 | 证据 |
-|------|--------------------|--------|------|------|
-| **Target Jump** | `GetForegroundWindow()==target` | NOT CONNECTED (F1 死代码) | ✅ **PASS** | H1-2：`jump` 已接真调用 + 端到端 Oracle 命中 |
-| **Package** | tarball 装→fresh home→daemon/notify/center | NOT VERIFIED (F2) | ✅ **PASS** | H1-3：`npm pack`→隔离 prefix 安装→`agent-notify` 写 State 成功 |
-| **State 原子写** | 并发写无损坏/无 tmp | PASS | ✅ PASS (复核) | H1-6：20 并发 recordEvent 无损、无 tmp |
-| **Daemon 单实例** | start×N → ≥1 进程 | FAIL（无 Mutex）→已 P1-8 修复 | ✅ PASS | H1-4：start×3 只留 1 daemon.js 进程 |
-| **Regain home 一致性** | `AGENT_ATTENTION_HOME` 全仓一致 | 多处硬编码 `os.homedir()` | ✅ 修复 | index/config/daemon 三处统一 |
-| **门控 reason** | 不发分支可诊断 | 静默 exit(0) | ✅ 修复 | H1-5：三条 `reason` 分支实测 |
-
-**H1 Exit Gate 判定**：F1（Target Jump）、F2（Package 首装）不再标 dead/悬空；State 原子写、Daemon 单实例、门控 reason 均达实机验证。**H1 满足 Roadmap §2 Exit Gate（附表全绿 L1/L2，F1/F2 非 dead）。**
-
-> **H1 全部 7 项完成**。Roadmap H1 段验收：基线 241 全绿 + build clean；F1/F2 已修已验；Daemon 单实例 + home 一致性已修；门控带 reason；原子写复核通过；Verification Map 原 F1/F2/daemon FAIL 项均已转 PASS。剩余两项明确的环境/打包 NOTE（无 watchdog、C# UI 需 .NET 部署）已在 §7 诚实标注，归入后续 H1-3 打包/H2 子项。
-
-### H-L4a Hook 自动接线 — `setup hook`（2026-09-05）
-
-背景：借鉴 evolver `setup-hooks` 模式，让 agent-attention 的 Claude Code hook（`src/hooks.ts` / `daemon-cli runHook`）被真正接线。此前 Roadmap L4「Agent 集成/Skill」为 **NOT VERIFIED**，且有两个悬空 bug。
-
-| 项 | 结果 | 证据 |
-|----|------|------|
-| **Bug A：缺 `hook` 子命令** | ✅ 修复 | `install-hook.ts` `buildHooksConfig` 原生成 `node "<daemon-cli.js>"`（无 `hook`）→ hook 触发走 CLI 解析打印帮助。已改为 `node "<…>daemon-cli.js" hook`。`hooks/hooks.json` 模板同步。 |
-| **Bug B：悬空 env 占位** | ✅ 已修 | `install-hook.ts` 不再用 `${ANTHROPIC_CLI_AGENT_ATTENTION_HOOK_PATH}`，改为 build 时 resolve 绝对路径；`hooks/hooks.json` 模板保留占位但补上 `hook` 子命令（作为显式注入点示例）。 |
-| **新增 `setup hook` 子命令** | ✅ L2/L3 验证 | `daemon-cli.ts` `runSetupHook()`（Claude Code adapter，`ccSettingsPath`/`ccRead`/`ccWrite`/`ccBuildEntries`）：`--project <dir>` 写 `.claude/settings.json`；`--verify` 只读校验（host 存在 + SessionStart/Stop 已装）；`--uninstall` 仅删本产品条目保留他插件。实测：merge 保留 `other-plugin`（Stop groups=2）、幂等（重跑仍=2）、verify exit 0、uninstall 只删我们的（留其他、移除 SessionStart） |
-| **L4 Hook→CLI→State 全链路** | ✅ 真实 CLI（非 mock） | 三组 stdin payload 实测：`exitStatus:0,turns:3`→`completed`/P2；`exitStatus:1`→`failed`/P1；`exitStatus:2`→`input_required`/P0；空 stdin→exit 0 不 crash、不写 State（符合「hook 不得拖垮 Claude」） |
-| **回归** | ✅ PASS | `npm run build` clean；241/241 全绿；已清理测试副作用 `.hooktest` 与误建的 repo `.claude` |
-| **诚实边界** | ⚠️ | 真实 end-user Claude Code 会话端到端仍需真实 Claude（不可自动化）；`setup hook` 默认写 `~/.claude/`（用户级），测试仅在 `--project` 临时目录验证、**未污染真实 ~/.claude**；真实全局接入需用户显式运行。 |
-
-> 意义：解锁 Roadmap L4「Agent 集成/Skill」「只做单测 mock」的缺口——现在有了一条 **真实 CLI 链路**（Claude Stop hook → `daemon-cli hook` → State），从「单测 mock」升级为「真实子进程链路（L2/L3）已验证 | 真实 Claude 会话待人工」。对应 Verification Map L4 行状态部分转实。
-
-### H-账 代码量 vs 已验证有效代码账目（2026-09-06 评估）
-
-用户提问「代码量很多但被验证过的有效代码很少」——量化核对结果，作为 H2 优先级的地基。
-
-| 指标 | 数值 | 解读 |
-|------|------|------|
-| `src/*.ts` 源码 | 6804 行 | 总代码量 |
-| `tests/*.test.ts` / 用例 | 4362 行 / 241 用例 | **单元测试层很健康**（测试:源码≈64%），该层不虚 |
-| 端到端验证过功能 | 约 60–65% | 有效代码少于账面总量，见下表 |
-
-**端到端验证（真 CLI/进程子进程，非 mock）锚点：**
-- State 原子写：20 并发 recordEvent 无损、无 tmp 泄漏
-- Daemon 单实例：start×3 → 只留 1 进程
-- Target Jump（F1）：GetForegroundWindow()==targetPid Oracle 命中
-- Package 首装（F2）：npm pack→fresh home→notify 写 State
-- Claude Hook→CLI→State：completed/failed/input_required 三分支 + 空 stdin 不 crash
-
-**主要「未验证有效」缺口（按优先级）：**
-| 缺口 | 体量 | 状态 | 根因/去路 |
-|------|------|------|-----------|
-| C# Tray/Center UI | ~2000 行（约 src 1/3）| 环境 NOT VERIFIED | `.NET runtime 未注册`,Tray 起不来 → **用 self-contained 发布救活**（H1-3 打包待办/H2） |
-| Focus 判定 | — | 待建 | ding-ding 同构，前景进程是终端祖先 |
-| Quiet Hours | — | 待建 | H2 |
-| CLI 不启动意外程序 | — | 待修 | daemon restart 一次目前带意外进程 |
-| 真实 Claude 会话端到端 | — | 待人工 | 交互式 CLI 不可自动化 |
-
-> 结论：单元层健康（64% 覆盖）。「被验证有效」≈60–65%，矛盾集中在**那 ~2000 行没端到端验证过的 C# Tray/Center UI**（占 src 近 1/3）。**最优下一步：用 self-contained 发布把 Tray/Center 救活**，让最大一段"写了没验证"的代码脱困。已在 H1-3/H2 标注为打包/环境子项。

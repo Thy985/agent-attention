@@ -12,7 +12,7 @@
   "scripts": {
     "build": "tsc",
     "build:ui": "mise exec -- dotnet build src/center/csharp/AgentAttention.UI/AgentAttention.UI.csproj -c Release",
-    "publish:ui": "mise exec -- dotnet publish src/center/csharp/AgentAttention.UI/AgentAttention.UI.csproj -c Release -r win-x64 --self-contained false -o src/center/csharp/dist/win-x64",
+    "publish:ui": "mise exec -- dotnet publish src/center/csharp/AgentAttention.UI/AgentAttention.UI.csproj -c Release -r win-x64 --self-contained true -o src/center/csharp/dist/win-x64",
     "test": "jest --forceExit",
     "prepare": "npm run build",
     "bin:install": "npm run build && node dist/scripts/install-daemon.js",
