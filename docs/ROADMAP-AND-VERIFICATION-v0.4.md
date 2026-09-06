@@ -226,3 +226,31 @@ Only claim Complete when 所有 AC of that 地平线 有真实环境证据。
 | **诚实边界** | ⚠️ | 真实 end-user Claude Code 会话端到端仍需真实 Claude（不可自动化）；`setup hook` 默认写 `~/.claude/`（用户级），测试仅在 `--project` 临时目录验证、**未污染真实 ~/.claude**；真实全局接入需用户显式运行。 |
 
 > 意义：解锁 Roadmap L4「Agent 集成/Skill」「只做单测 mock」的缺口——现在有了一条 **真实 CLI 链路**（Claude Stop hook → `daemon-cli hook` → State），从「单测 mock」升级为「真实子进程链路（L2/L3）已验证 | 真实 Claude 会话待人工」。对应 Verification Map L4 行状态部分转实。
+
+### H-账 代码量 vs 已验证有效代码账目（2026-09-06 评估）
+
+用户提问「代码量很多但被验证过的有效代码很少」——量化核对结果，作为 H2 优先级的地基。
+
+| 指标 | 数值 | 解读 |
+|------|------|------|
+| `src/*.ts` 源码 | 6804 行 | 总代码量 |
+| `tests/*.test.ts` / 用例 | 4362 行 / 241 用例 | **单元测试层很健康**（测试:源码≈64%），该层不虚 |
+| 端到端验证过功能 | 约 60–65% | 有效代码少于账面总量，见下表 |
+
+**端到端验证（真 CLI/进程子进程，非 mock）锚点：**
+- State 原子写：20 并发 recordEvent 无损、无 tmp 泄漏
+- Daemon 单实例：start×3 → 只留 1 进程
+- Target Jump（F1）：GetForegroundWindow()==targetPid Oracle 命中
+- Package 首装（F2）：npm pack→fresh home→notify 写 State
+- Claude Hook→CLI→State：completed/failed/input_required 三分支 + 空 stdin 不 crash
+
+**主要「未验证有效」缺口（按优先级）：**
+| 缺口 | 体量 | 状态 | 根因/去路 |
+|------|------|------|-----------|
+| C# Tray/Center UI | ~2000 行（约 src 1/3）| 环境 NOT VERIFIED | `.NET runtime 未注册`,Tray 起不来 → **用 self-contained 发布救活**（H1-3 打包待办/H2） |
+| Focus 判定 | — | 待建 | ding-ding 同构，前景进程是终端祖先 |
+| Quiet Hours | — | 待建 | H2 |
+| CLI 不启动意外程序 | — | 待修 | daemon restart 一次目前带意外进程 |
+| 真实 Claude 会话端到端 | — | 待人工 | 交互式 CLI 不可自动化 |
+
+> 结论：单元层健康（64% 覆盖）。「被验证有效」≈60–65%，矛盾集中在**那 ~2000 行没端到端验证过的 C# Tray/Center UI**（占 src 近 1/3）。**最优下一步：用 self-contained 发布把 Tray/Center 救活**，让最大一段"写了没验证"的代码脱困。已在 H1-3/H2 标注为打包/环境子项。
