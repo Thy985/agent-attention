@@ -56,7 +56,10 @@ export async function headlessCommand(command: string): Promise<void> {
       if (failure) throw failure;
       const pid = ownedPid();
       if (pid && fs.existsSync(path.join(dir, 'ipc-port.txt'))) { console.log(JSON.stringify({ running: true, pid, mode: 'headless' })); return; }
-      if (child.exitCode !== null) break;
+      // A zero-exit contender may have lost the daemon lock to another start.
+      // Keep waiting for that owner's readiness instead of reporting a false
+      // failure in the interval between lock acquisition and port publication.
+      if (child.exitCode !== null && child.exitCode !== 0) break;
       await sleep(50);
     }
     // Startup timeout is not permission to launch a duplicate or kill another process.

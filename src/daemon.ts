@@ -1,6 +1,6 @@
 import { withFileLock } from './state/file-lock';
 import { getPlatformCapabilities } from './platform';
-import { resolveStateDir } from './paths';
+import { resolveStateDir, resolveNativeWatchPath } from './paths';
 import * as chokidar from 'chokidar';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
@@ -257,7 +257,7 @@ export function createDaemon(options: DaemonOptions): Daemon {
   };
 
   // Watch state.json for changes
-  watcher = chokidar.watch(options.statePath, {
+  watcher = chokidar.watch(resolveNativeWatchPath(options.statePath), {
     persistent: true,
     awaitWriteFinish: { stabilityThreshold: 100, pollInterval: 50 },
     ignoreInitial: true,

@@ -82,7 +82,7 @@ linuxTest('real headless subprocess: persist, authenticated IPC, read, restart, 
 
 test('state directory precedence preserves legacy MCP alias', () => {
   const home=process.env.AGENT_ATTENTION_HOME, alias=process.env.AGENT_ATTENTION_STATE_DIR;
-  try { delete process.env.AGENT_ATTENTION_HOME; process.env.AGENT_ATTENTION_STATE_DIR='/tmp/alias'; expect(resolveStateDir()).toBe('/tmp/alias'); process.env.AGENT_ATTENTION_HOME='/tmp/canonical'; expect(resolveStateDir()).toBe('/tmp/canonical'); }
+  try { delete process.env.AGENT_ATTENTION_HOME; process.env.AGENT_ATTENTION_STATE_DIR=path.join(os.tmpdir(),'alias'); expect(resolveStateDir()).toBe(path.resolve(os.tmpdir(),'alias')); process.env.AGENT_ATTENTION_HOME=path.join(os.tmpdir(),'canonical'); expect(resolveStateDir()).toBe(path.resolve(os.tmpdir(),'canonical')); }
   finally { if(home===undefined) delete process.env.AGENT_ATTENTION_HOME; else process.env.AGENT_ATTENTION_HOME=home; if(alias===undefined) delete process.env.AGENT_ATTENTION_STATE_DIR; else process.env.AGENT_ATTENTION_STATE_DIR=alias; }
 });
 

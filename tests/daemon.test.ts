@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { EventEmitter } from 'events';
 import { createDaemon, DaemonOptions } from '../src/daemon';
+import * as paths from '../src/paths';
 
 // Mock child_process.spawn so tests don't actually run PowerShell.
 jest.mock('child_process', () => ({
@@ -78,6 +79,18 @@ describe('daemon (file-polling architecture)', () => {
       ]),
       expect.objectContaining({ stdio: ['ignore', 'ignore', 'pipe'] }),
     );
+  });
+
+  it('routes state watcher registration through native path canonicalization', async () => {
+    const expanded = path.join(tmpDir, 'expanded-state.json');
+    const resolver = jest.spyOn(paths, 'resolveNativeWatchPath').mockReturnValue(expanded);
+    const watch = jest.spyOn(require('chokidar'), 'watch');
+    try {
+      daemon = createDaemon(options as DaemonOptions);
+      expect(resolver).toHaveBeenCalledWith(options.statePath);
+      expect(watch).toHaveBeenCalledWith(expanded, expect.objectContaining({ ignoreInitial: true }));
+      await daemon.stop(); daemon = null;
+    } finally { resolver.mockRestore(); watch.mockRestore(); }
   });
 
   it('writes tray-state.json on state change', async () => {

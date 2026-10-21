@@ -44,72 +44,74 @@ async function readAuthSecret(): Promise<string | null> {
   return fs.readFileSync(AUTH_FILE, 'utf8').trim();
 }
 
-function ensureDaemonRunning(): { pid: number | null; killed: boolean } {
-  const child = child_process.spawn(process.execPath, [DAEMON_CLI, 'daemon', 'run', '--headless'], {
-    env: DAEMON_ENV, cwd: path.join(__dirname, '..'), stdio: 'ignore',
+let daemonChild: child_process.ChildProcess | null = null;
+let daemonStderr = '';
+function ensureDaemonRunning(): void {
+  daemonChild = child_process.spawn(process.execPath, [DAEMON_CLI, 'daemon', 'run', '--headless'], {
+    env: DAEMON_ENV, cwd: path.join(__dirname, '..'), stdio: ['ignore', 'ignore', 'pipe'],
   });
-  return { pid: child.pid ?? null, killed: false };
+  daemonChild.stderr!.on('data', data => { daemonStderr += data.toString(); });
 }
 
-/** Send a TCP frame with auth handshake, collect all response lines. */
+/** Buffered newline framing; complete only on rejection or this command's ACK. */
 async function tcpSendWithAuth(
-  port: number, token: string | null, frame: object, timeoutMs = 3000,
+  port: number, token: string | null, frame: { requestId: string; [key: string]: unknown }, timeoutMs = 5000,
 ): Promise<string[]> {
-  return new Promise(resolve => {
+  return new Promise((resolve, reject) => {
     const client = new net.Socket();
     const lines: string[] = [];
-    let authenticated = true;
-    const timer = setTimeout(() => { client.destroy(); resolve(lines); }, timeoutMs);
+    let buffer = '', settled = false;
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true; clearTimeout(timer); client.destroy();
+      if (error) reject(error); else resolve(lines);
+    };
+    const timer = setTimeout(() => finish(new Error(`Missing ACK/rejection; daemon exit=${daemonChild?.exitCode} ${daemonStderr}`)), timeoutMs);
+    client.on('error', error => finish(error));
+    client.on('end', () => finish(new Error(`Daemon closed before ACK/rejection: ${daemonStderr}`)));
     client.connect(port, '127.0.0.1', () => {
-      client.write(JSON.stringify({ type: 'hello', token: token ?? '' }) + '\n');
+      // Server explicitly supports consecutive hello+command frames on one stream.
+      client.write(JSON.stringify({ type: 'hello', token: token ?? '' }) + '\n' + JSON.stringify(frame) + '\n');
     });
     client.on('data', (data: Buffer) => {
-      for (const line of data.toString().split('\n')) {
-        if (!line.trim()) continue;
-        try {
-          const msg = JSON.parse(line.trim());
-          if (msg.type === 'auth-rejected') { clearTimeout(timer); client.destroy(); resolve([]); return; }
-          if (msg.type === 'hello' && msg.ok) { authenticated = true; continue; }
-        } catch {}
-        lines.push(line.trim());
+      buffer += data.toString('utf8');
+      let end: number;
+      while ((end = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, end).trim(); buffer = buffer.slice(end + 1);
+        if (!line) continue;
+        lines.push(line);
+        const msg = JSON.parse(line);
+        if (msg.type === 'auth-rejected' || (msg.type === 'cmd-ack' && msg.requestId === frame.requestId)) {
+          finish(); return;
+        }
       }
     });
-    client.once('error', () => { clearTimeout(timer); resolve(lines); });
-    setTimeout(() => {
-      if (!authenticated) { client.destroy(); resolve(lines); return; }
-      client.write(JSON.stringify(frame) + '\n');
-    }, 150);
   });
 }
 
 describe('IPC Security Verification (M8 P0)', () => {
-  let originalPort: string | null = null;
-  let originalAuth: string | null = null;
-  let daemonPid: number | null = null;
-
   beforeAll(async () => {
-    // Clear stale port/auth files from previous runs
-    if (fs.existsSync(PORT_FILE)) {
-      originalPort = fs.readFileSync(PORT_FILE, 'utf8').trim();
-      try { fs.unlinkSync(PORT_FILE); } catch {}
-    }
-    if (fs.existsSync(AUTH_FILE)) {
-      originalAuth = fs.readFileSync(AUTH_FILE, 'utf8').trim();
-      try { fs.unlinkSync(AUTH_FILE); } catch {}
-    }
-    const result = ensureDaemonRunning();
-    daemonPid = result.pid;
-    await new Promise(r => setTimeout(r, 2000));
+    ensureDaemonRunning();
+    const port = await getDaemonPort();
+    if (port === null) throw new Error(`Isolated daemon did not start: ${daemonStderr}`);
+    const token = await readAuthSecret();
+    if (!token) throw new Error('Isolated daemon auth secret missing');
+    // Readiness is an actual authenticated response, not a fixed sleep/port file.
+    const lines = await tcpSendWithAuth(port, token, { type: 'cmd', requestId: 'ready', command: 'unknown-command', args: [] });
+    expect(lines.map(line => JSON.parse(line))).toContainEqual(expect.objectContaining({ type: 'cmd-ack', requestId: 'ready', ok: false }));
   });
 
-  afterAll(() => {
-    if (originalPort !== null) fs.writeFileSync(PORT_FILE, originalPort);
-    else if (fs.existsSync(PORT_FILE)) fs.unlinkSync(PORT_FILE);
-    if (originalAuth !== null) fs.writeFileSync(AUTH_FILE, originalAuth);
-    else if (fs.existsSync(AUTH_FILE)) fs.unlinkSync(AUTH_FILE);
-    if (daemonPid) { try { process.kill(daemonPid, 'SIGTERM'); } catch {} }
-    // Only our isolated data is removed; no real user's token or daemon is touched.
-    fs.rmSync(STATE_DIR, { recursive: true, force: true });
+  afterAll(async () => {
+    if (daemonChild && daemonChild.exitCode === null && daemonChild.signalCode === null) {
+      const exited = new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('Isolated daemon did not exit')), 5000);
+        daemonChild!.once('exit', () => { clearTimeout(timer); resolve(); });
+      });
+      daemonChild.kill('SIGTERM');
+      await exited;
+    }
+    // Remove only after the isolated process has released its watches and files.
+    fs.rmSync(STATE_DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
 
   describe('IPC-001: bind 127.0.0.1 only', () => {
@@ -181,8 +183,8 @@ describe('IPC Security Verification (M8 P0)', () => {
         type: 'cmd', requestId: 'p0-unauth-' + Date.now(),
         command: 'jump', args: ['x'],
       });
-      // Should get auth-rejected or empty response
-      expect(lines.some(l => { try { return JSON.parse(l).type === 'auth-rejected'; } catch { return false; } }) || lines.length === 0).toBe(true);
+      // Silence/connection failure is not evidence of authentication enforcement.
+      expect(lines.some(l => JSON.parse(l).type === 'auth-rejected')).toBe(true);
     });
 
     it('unauthorized client (empty token) is rejected', async () => {
@@ -192,7 +194,7 @@ describe('IPC Security Verification (M8 P0)', () => {
         type: 'cmd', requestId: 'p0-unauth2-' + Date.now(),
         command: 'mark-all-read', args: [],
       });
-      expect(lines.some(l => { try { return JSON.parse(l).type === 'auth-rejected'; } catch { return false; } }) || lines.length === 0).toBe(true);
+      expect(lines.some(l => JSON.parse(l).type === 'auth-rejected')).toBe(true);
     });
 
     it('no-token connection (raw cmd without hello) is rejected', async () => {
