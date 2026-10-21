@@ -1,0 +1,78 @@
+export declare type BaseHookInput = {
+    session_id: string;
+    transcript_path: string;
+    cwd: string;
+    /**
+     * UUID correlating a user prompt with all subsequent events until the next prompt. Same value emitted on OpenTelemetry events as the `prompt.id` attribute, so hook output can be joined to OTel events at prompt grain. Absent until the first user input of the process lifetime.
+     */
+    prompt_id?: string;
+    permission_mode?: string;
+    /**
+     * Subagent identifier. Present only when the hook fires from within a subagent (e.g., a tool called by an AgentTool worker). Absent for the main thread, even in --agent sessions. Use this field (not agent_type) to distinguish subagent calls from main-thread calls.
+     */
+    agent_id?: string;
+    /**
+     * Agent type name (e.g., "general-purpose", "code-reviewer"). Present when the hook fires from within a subagent (alongside agent_id), or on the main thread of a session started with --agent (without agent_id).
+     */
+    agent_type?: string;
+    /**
+     * Reasoning effort applied to the current turn. Same shape as StatusLineCommandInput.effort. Present for hooks that fire within a tool-use context (PreToolUse, PostToolUse, Stop, SubagentStop, etc.) on a model that supports the effort parameter; absent for session-lifecycle hooks and models without effort support.
+     */
+    effort?: {
+        /**
+         * Active effort level for the current turn (e.g., "low", "medium", "high", "xhigh", "max"), after any silent downgrade for the selected model. Also exposed to hook commands and Bash as the CLAUDE_EFFORT env var.
+         */
+        level: string;
+    };
+};
+
+export declare type PermissionRequestHookInput = BaseHookInput & {
+    hook_event_name: 'PermissionRequest';
+    tool_name: string;
+    tool_input: unknown;
+    permission_suggestions?: PermissionUpdate[];
+    mcp_server?: McpServerProvenance;
+};
+
+export declare type NotificationHookInput = BaseHookInput & {
+    hook_event_name: 'Notification';
+    message: string;
+    title?: string;
+    notification_type: string;
+};
+
+export declare type StopHookInput = BaseHookInput & {
+    hook_event_name: 'Stop';
+    stop_hook_active: boolean;
+    /**
+     * Text content of the last assistant message before stopping. Avoids the need to read and parse the transcript file.
+     */
+    last_assistant_message?: string;
+    /**
+     * In-flight background work (running/pending + backgrounded) registered in this session. Lets hooks distinguish "session is done" from "session is paused waiting for background work to wake it". Empty array when nothing is in flight.
+     */
+    background_tasks?: BackgroundTaskSummary[];
+    /**
+     * Session-scoped cron tasks (CronCreate, ScheduleWakeup, /loop) that will wake this session later. Empty array when none are scheduled.
+     */
+    session_crons?: SessionCronSummary[];
+
+
+};
+
+export declare type StopFailureHookInput = BaseHookInput & {
+    hook_event_name: 'StopFailure';
+    error: SDKAssistantMessageError;
+    error_details?: string;
+    last_assistant_message?: string;
+};
+
+export declare type ElicitationHookInput = BaseHookInput & {
+    hook_event_name: 'Elicitation';
+    mcp_server_name: string;
+    message: string;
+    mode?: 'form' | 'url';
+    url?: string;
+    elicitation_id?: string;
+    requested_schema?: Record<string, unknown>;
+};

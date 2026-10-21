@@ -1,18 +1,22 @@
 # Agent Attention Center
 
-Windows notification infrastructure for AI Agents. Agents call `agent-notify`; you see Toasts, hear sounds, and open the Center window to see everything in one place.
+Local Agent attention inbox with a Windows desktop adapter and an explicit Linux headless backend. Agents report events through `agent-notify`; retained state, query and read operations are shared. Windows desktop delivery remains separately verified.
 
 ```
 Agent → agent-notify → daemon → Toast + Sound + Tray Icon + Center
 ```
 
-## Quick Start (5 commands)
+## Linux headless (source milestone)
+
+See [Linux headless commands, persistence and limits](docs/LINUX-HEADLESS.md). Build the source, then select `AGENT_ATTENTION_MODE=headless` and an isolated `AGENT_ATTENTION_HOME` before `node dist/daemon-cli.js daemon start --headless`. This is not a Linux tray/Toast client; it installs no autostart service.
+
+## Windows Quick Start (5 commands)
 
 ```bash
 # 1. Install
 npm install -g agent-attention    # OR from source: npm install && npm run build && npm link
 
-# 2. Verify everything works
+# 2. Inspect local configuration (not desktop acceptance)
 agent-attention doctor
 
 # 3. Check integration capabilities
@@ -35,8 +39,11 @@ export AGENT_ID=claude-code
 agent-notify completed "Task done"
 ```
 
-Or let the hooks handle it — when Claude Code exits, it automatically fires
-`agent-notify` with the session outcome.
+The versioned Claude hook adapter observes permission prompts, elicitation requests,
+and response failures. Stop/session exit does **not** prove task completion, and
+cancellation never becomes “needs input”. Explicit `completed` is a sender report,
+not independent acceptance. Other integrations remain experimental until their
+own event/version contract is validated. See the [event contract](docs/EVENT-CONTRACT.md).
 
 ## Commands
 
@@ -109,13 +116,14 @@ Startup hook:
 
 ## Integration Levels
 
-| Level | Mechanism | Reliability | Example Agents |
-|-------|-----------|-------------|----------------|
-| L0 | Manual CLI | ○ Manual | Unknown agents |
-| L1 | Skill | △ Best-effort | Continue (IDE) |
-| L2 | Wrapper | △ Probable | Codex, Aider |
-| L3 | Hook | ✓ Verified | Claude Code, Cline |
-| L4 | Plugin | △ Probable | OpenCode |
+L0–L7 are legacy mechanism identifiers, not reliability rankings.
+
+| Mechanism | Current evidence boundary |
+|-----------|---------------------------|
+| Manual CLI / Skill | Explicit sender report only; outcome is not independently checked |
+| Wrapper | Nonzero process exit observation; clean exit/cancel produces no outcome notice |
+| Claude hook | Versioned, validated permission/input/response-failure signal, never task completion |
+| Generic Plugin / other protocols | No generic lifecycle inference; MCP query success is not completion |
 
 See [AGENT_CAPABILITY_MATRIX.md](docs/AGENT_CAPABILITY_MATRIX.md) for full details.
 
@@ -142,3 +150,5 @@ npm test               # Run test suite
 - **Windows only** — macOS/Linux use different notification APIs
 - **Requires AGENT_ID** — agents must set `AGENT_ID` env var for proper identification (the daemon warns if missing)
 - **Target Jump needs PID** — agents must call `agent-attention agent target set <id> --pid <n>` for Focus to work
+
+候选包、CI 分层与安装后检查见 [PACKAGE-ACCEPTANCE.md](docs/PACKAGE-ACCEPTANCE.md)。

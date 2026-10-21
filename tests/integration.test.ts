@@ -61,7 +61,7 @@ describe('Integration Catalog', () => {
   });
 
   describe('getEffectiveReliability', () => {
-    it('returns highest reliability across events', () => {
+    it('returns completion-specific reliability', () => {
       const manifest: IntegrationManifest = {
         id: 'test',
         name: 'Test Agent',
@@ -138,7 +138,7 @@ describe('Integration Catalog', () => {
       const claude = list.find((m) => m.id === 'claude-code');
       expect(claude).toBeDefined();
       expect(claude!.level).toBe(IntegrationLevel.L3_HOOK);
-      expect(claude!.status).toBe('stable');
+      expect(claude!.status).toBe('experimental');
     });
   });
 });
@@ -168,33 +168,8 @@ describe('Integration Providers', () => {
   describe('HookProvider', () => {
     const provider = new HookProvider();
 
-    it('parses Stop with exitStatus=0 → completed', () => {
-      const event = provider.parseEvent(
-        { sessionId: 's1', exitStatus: 0, turns: 5, agentId: 'test' },
-        testManifest,
-      );
-      expect(event).not.toBeNull();
-      expect(event!.event).toBe('completed');
-      expect(event!.reliability).toBe(CompletionReliability.Verified);
-      expect(event!.agentId).toBe('test');
-    });
-
-    it('parses Stop with exitStatus=1 → failed', () => {
-      const event = provider.parseEvent(
-        { sessionId: 's2', exitStatus: 1 },
-        testManifest,
-      );
-      expect(event).not.toBeNull();
-      expect(event!.event).toBe('failed');
-    });
-
-    it('parses Stop with exitStatus=2 → input_required', () => {
-      const event = provider.parseEvent(
-        { sessionId: 's3', exitStatus: 2 },
-        testManifest,
-      );
-      expect(event).not.toBeNull();
-      expect(event!.event).toBe('input_required');
+    it.each([0, 1, 2])('legacy exitStatus=%i cannot manufacture a task outcome', (exitStatus) => {
+      expect(provider.parseEvent({ sessionId: 's', exitStatus, turns: 5 }, testManifest)).toBeNull();
     });
 
     it('returns null for undefined exitStatus', () => {
@@ -209,11 +184,8 @@ describe('Integration Providers', () => {
   describe('WrapperProvider', () => {
     const provider = new WrapperProvider();
 
-    it('parses exit code 0 → completed', () => {
-      const event = provider.parseEvent(0, testManifest);
-      expect(event).not.toBeNull();
-      expect(event!.event).toBe('completed');
-      expect(event!.reliability).toBe(CompletionReliability.Probable);
+    it('clean process exit cannot prove business completion', () => {
+      expect(provider.parseEvent(0, testManifest)).toBeNull();
     });
 
     it('parses non-zero exit code → failed', () => {

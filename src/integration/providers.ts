@@ -9,6 +9,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { parseClaudeHook } from './contract';
+import { installClaudeHooks, removeClaudeHooks } from './hook-settings';
 import {
   IntegrationManifest,
   IntegrationProvider,
@@ -25,95 +27,21 @@ export class HookProvider implements IntegrationProvider {
   mechanism: IntegrationMechanism = 'hook';
 
   parseEvent(payload: unknown, manifest: IntegrationManifest): CanonicalAttentionEvent | null {
-    if (typeof payload !== 'object' || payload === null) return null;
-    const p = payload as Record<string, unknown>;
-
-    const exitStatus = p.exitStatus as number | undefined;
-    const turns = (p.turns as number) ?? 0;
-    const sessionId = (p.sessionId as string) ?? 'unknown';
-    const agentId = (p.agentId as string) ?? manifest.id;
-
-    if (exitStatus === undefined) return null; // No actionable event
-
-    let event: string;
-    let reliability: CompletionReliability;
-    let message: string;
-
-    if (exitStatus === 0 && turns > 0) {
-      event = 'completed';
-      reliability = CompletionReliability.Verified;
-      message = `${manifest.name} session ended cleanly (${turns} turn${turns > 1 ? 's' : ''}, session ${sessionId.slice(0, 8)})`;
-    } else if (exitStatus === 1) {
-      event = 'failed';
-      reliability = CompletionReliability.Verified;
-      message = `${manifest.name} session failed (exit=${exitStatus}, session ${sessionId.slice(0, 8)})`;
-    } else if (exitStatus === 2) {
-      event = 'input_required';
-      reliability = CompletionReliability.Verified;
-      message = `${manifest.name} session cancelled by user (session ${sessionId.slice(0, 8)})`;
-    } else {
-      return null;
-    }
-
-    return {
-      event: event as any,
-      sourceEvent: `Stop(exitStatus=${exitStatus})`,
-      reliability,
-      agentId,
-      agentName: manifest.name,
-      message,
-      timestamp: Date.now(),
-      context: { sessionId, turns, exitStatus },
-    };
+    return parseClaudeHook(payload, manifest);
   }
 
   install(manifest: IntegrationManifest): string {
-    const hooksDir = path.join(process.cwd(), '.claude');
-    const hooksFile = path.join(hooksDir, 'hooks.json');
-    fs.mkdirSync(hooksDir, { recursive: true });
-
-    const existing = this.readJson(hooksFile);
-    const hookEntry = {
-      type: 'command' as const,
-      command: `node "${path.join(__dirname, '..', '..', 'dist', 'daemon-cli.js')}" hook`,
-      statusMessage: `${manifest.name} — recording session end`,
-      timeout: 5,
-    };
-
-    const config = existing && existing.hooks
-      ? existing
-      : { hooks: {} };
-
-    if (!config.hooks.Stop) config.hooks.Stop = [];
-    if (!Array.isArray(config.hooks.Stop)) config.hooks.Stop = [config.hooks.Stop];
-
-    // Avoid duplicates
-    const alreadyHas = config.hooks.Stop.some((e: any) =>
-      e.hooks?.some((h: any) => h.command?.includes('daemon-cli'))
-    );
-    if (!alreadyHas) {
-      config.hooks.Stop.push({ hooks: [hookEntry] });
-    }
-
-    fs.writeFileSync(hooksFile, JSON.stringify(config, null, 2) + '\n', 'utf-8');
-    return hooksFile;
+    if (manifest.id !== 'claude-code') throw new Error('No versioned hook contract for ' + manifest.id);
+    return installClaudeHooks(process.cwd(), path.resolve(__dirname, '..', 'daemon-cli.js'));
   }
 
   uninstall(manifest: IntegrationManifest): void {
-    const hooksFile = path.join(process.cwd(), '.claude', 'hooks.json');
-    if (!fs.existsSync(hooksFile)) return;
-
-    const config = this.readJson(hooksFile);
-    if (config?.hooks?.Stop) {
-      config.hooks.Stop = config.hooks.Stop.filter((e: any) =>
-        !e.hooks?.some((h: any) => h.command?.includes('daemon-cli'))
-      );
-      fs.writeFileSync(hooksFile, JSON.stringify(config, null, 2), 'utf-8');
-    }
+    if (manifest.id !== 'claude-code') return;
+    removeClaudeHooks(path.join(process.cwd(), '.claude', 'settings.json'), path.resolve(__dirname, '..', 'daemon-cli.js'));
   }
 
   getInstallInstructions(manifest: IntegrationManifest): string {
-    return `Run: agent-attention integration install ${manifest.id}\n\nThis creates .claude/hooks.json with Stop and SessionStart hooks.`;
+    return `Run: agent-attention integration install ${manifest.id}\n\nThis updates .claude/settings.json with permission, elicitation and API-failure observations; Stop is not task completion.`;
   }
 
   private readJson(filePath: string): any | null {
@@ -130,33 +58,17 @@ export class WrapperProvider implements IntegrationProvider {
   mechanism: IntegrationMechanism = 'wrapper';
 
   parseEvent(payload: unknown, manifest: IntegrationManifest): CanonicalAttentionEvent | null {
-    // Wrapper events come from process exit, not stdin JSON
-    // This is a best-effort inference
-    if (typeof payload === 'number') {
-      const exitCode = payload;
-      if (exitCode === 0) {
-        return {
-          event: 'completed',
-          sourceEvent: `process_exit(0)`,
-          reliability: CompletionReliability.Probable,
-          agentId: manifest.id,
-          agentName: manifest.name,
-          message: `${manifest.name} session finished (wrapper detected clean exit)`,
-          timestamp: Date.now(),
-        };
-      } else {
-        return {
-          event: 'failed',
-          sourceEvent: `process_exit(${exitCode})`,
-          reliability: CompletionReliability.BestEffort,
-          agentId: manifest.id,
-          agentName: manifest.name,
-          message: `${manifest.name} session failed (exit code ${exitCode})`,
-          timestamp: Date.now(),
-        };
-      }
-    }
-    return null;
+    // Process failure is not business failure; clean exit/cancel produces no notice.
+    if (typeof payload !== 'number' || !Number.isInteger(payload) || payload <= 0 ||
+        payload > 255 || payload === 130 || payload === 143) return null;
+    return {
+      event: 'failed', sourceEvent: `process_exit(${payload})`,
+      reliability: CompletionReliability.BestEffort,
+      agentId: manifest.id, agentName: manifest.name,
+      message: `${manifest.name} process exited with code ${payload} (task outcome unknown)`,
+      timestamp: Date.now(),
+      evidence: { contract: 'process-exit/v1', mechanism: 'wrapper', basis: 'process_observation', scope: 'process' },
+    };
   }
 
   install(manifest: IntegrationManifest): string {
@@ -176,10 +88,8 @@ export AGENT_NAME="${manifest.name}"
 exit_code=$?
 
 # Send notification based on exit code
-if [ $exit_code -eq 0 ]; then
-  agent-notify completed "${manifest.name} session finished"
-else
-  agent-notify failed "${manifest.name} session failed (exit=$exit_code)"
+if [ $exit_code -ne 0 ] && [ $exit_code -ne 130 ] && [ $exit_code -ne 143 ]; then
+  AGENT_ATTENTION_PROCESS_EXIT="$exit_code" agent-notify failed "${manifest.name} process exited (exit=$exit_code; task outcome unknown)"
 fi
 
 exit $exit_code
@@ -268,38 +178,8 @@ export class PluginProvider implements IntegrationProvider {
   mechanism: IntegrationMechanism = 'plugin';
 
   parseEvent(payload: unknown, manifest: IntegrationManifest): CanonicalAttentionEvent | null {
-    // Plugin events depend on the specific plugin API
-    // This is a generic parser; each plugin provider should override
-    if (typeof payload === 'object' && payload !== null) {
-      const p = payload as Record<string, unknown>;
-      const event = p.event as string | undefined;
-      const status = p.status as string | undefined;
-
-      if (status === 'completed' || status === 'success') {
-        return {
-          event: 'completed',
-          sourceEvent: event,
-          reliability: CompletionReliability.Probable,
-          agentId: manifest.id,
-          agentName: manifest.name,
-          message: `${manifest.name} completed ${event ?? 'session'}`,
-          timestamp: Date.now(),
-          context: p,
-        };
-      }
-      if (status === 'failed' || status === 'error') {
-        return {
-          event: 'failed',
-          sourceEvent: event,
-          reliability: CompletionReliability.BestEffort,
-          agentId: manifest.id,
-          agentName: manifest.name,
-          message: `${manifest.name} failed: ${p.message ?? 'unknown error'}`,
-          timestamp: Date.now(),
-          context: p,
-        };
-      }
-    }
+    // No agent-specific, versioned plugin contract is implemented yet.
+    // Generic status=success may describe a tool call, not the overall task.
     return null;
   }
 

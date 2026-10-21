@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import { getPlatformCapabilities, isHeadless } from './platform';
+import { headlessCommand } from './platform/headless-cli';
+import { resolveStateDir } from './paths';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -42,7 +45,7 @@ function getPsPids(pattern: string, excludeSelf = true): number[] {
   } catch { return []; }
 }
 
-const STATE_DIR = path.join(os.homedir(), '.agent-attention');
+const STATE_DIR = resolveStateDir();
 const PID_FILE = path.join(STATE_DIR, 'daemon.pid');
 const LOCK_FILE = path.join(STATE_DIR, 'daemon.lock');
 const TRAY_PID_FILE = path.join(STATE_DIR, 'tray.pid');
@@ -251,7 +254,7 @@ function registerStartupHook(): void {
  * Uses node-notifier (already a dependency) to send a Windows Toast.
  */
 function showFirstLaunchNotification(): void {
-  const flagPath = path.join(os.homedir(), '.agent-attention', '.first-launch-done');
+  const flagPath = path.join(STATE_DIR, '.first-launch-done');
   if (fs.existsSync(flagPath)) return; // already notified
   try {
     const notifier = require('node-notifier');
@@ -580,7 +583,7 @@ function doctor(): void {
   console.log('');
   
   // Runtime log diagnostics
-  const logPath = path.join(os.homedir(), '.agent-attention', 'logs', 'runtime.jsonl');
+  const logPath = path.join(STATE_DIR, 'logs', 'runtime.jsonl');
   console.log('');
   console.log('Runtime Log:');
   if (fs.existsSync(logPath)) {
@@ -730,22 +733,27 @@ function clearAgentTarget(agentId: string): void {
   console.log(`Cleared target for "${agentId}"`);
 }
 
-function jumpToAgent(agentId: string): void {
+function jumpToAgent(agentId: string, json = false): void {
   const agent = getAgent(agentId);
   if (agent === undefined) {
-    console.error(`Agent "${agentId}" not found. Register first: agent-attention agent register <id> <name>`);
+    if (json) console.log(JSON.stringify({ ok: false, reason: 'agent-not-found' }));
+    else console.error(`Agent "${agentId}" not found. Register first: agent-attention agent register <id> <name>`);
     process.exit(1);
   }
   if (!agent.target) {
-    console.error(`Agent "${agentId}" has no target. Set one with: agent-attention agent target set <id> --pid <pid>`);
+    if (json) console.log(JSON.stringify({ ok: false, reason: 'no-target' }));
+    else console.error(`Agent "${agentId}" has no target. Set one with: agent-attention agent target set <id> --pid <pid>`);
     process.exit(1);
   }
   // P1-14 fix: previously jumpToTarget was exported but never called.
   // Now the CLI exposes `agent-attention jump <agent_id>` so users (and
   // automation) can trigger focus via the registered target.
-  const { jumpToTarget } = require('./jump');
-  jumpToTarget(agent.target);
-  console.log(`Jumped to agent "${agentId}" → terminal PID ${agent.target.pid}`);
+  const { activateTarget: jumpToTarget } = require('./platform');
+  const result = jumpToTarget(agent.target);
+  if (json) console.log(JSON.stringify(result));
+  else if (result.ok) console.log(`Jumped to agent "${agentId}" → terminal PID ${agent.target.pid}`);
+  else console.error(`Jump failed for "${agentId}": ${result.reason}. Use jump <agent-id> --json for diagnostics.`);
+  if (!result.ok) process.exitCode = 1;
 }
 
 // CLI entry point
@@ -977,18 +985,13 @@ function ccHookPath(): string {
 /** Build the SessionStart / Stop hook entries. `hook` subcommand is required so
  *  daemon-cli routes the lifecycle payload to runHook() (NOT the CLI parse path). */
 function ccBuildEntries(hookPath: string): Record<string, CC_HookGroup[]> {
-  const mk = (flag: string, msg: string, timeout: number) => ({
-    hooks: [{ type: 'command', command: `node "${hookPath}" hook${flag}`, statusMessage: msg, timeout }],
-  });
-  return {
-    SessionStart: [mk(' --session-start', 'Agent Attention — session started', 10)],
-    Stop: [mk('', 'Agent Attention — session end', 10)],
-  };
+  return require('./integration/hook-settings').claudeHookEntries(hookPath);
 }
 
 function isSetupOurHook(groups: CC_HookGroup[] | undefined): boolean {
   if (!groups || !Array.isArray(groups)) return false;
-  return groups.some((g) => (g.hooks || []).some((h) => (h.command || '').includes('daemon-cli.js')));
+  const expected = `node "${ccHookPath()}" hook`;
+  return groups.some((g) => Array.isArray(g.hooks) && g.hooks.some((h) => h.command === expected));
 }
 
 function runSetupHook(argv: string[]): void {
@@ -1010,7 +1013,7 @@ function runSetupHook(argv: string[]): void {
     const cfg = ccReadSettings(settingsPath);
     const sessionStartOk = isSetupOurHook(cfg.hooks?.['SessionStart']);
     const stopOk = isSetupOurHook(cfg.hooks?.['Stop']);
-    console.log('Agent Attention hook --verify');
+    console.log('Agent Attention hook configuration --verify (not live provider acceptance)');
     console.log(`  config    : ${settingsPath}  ${fs.existsSync(settingsPath) ? '' : '(missing)'}`);
     console.log(`  hook host : ${hookPath}  ${hostOk ? '(ok)' : '(MISSING)'}`);
     console.log(`  SessionStart : ${sessionStartOk ? 'installed' : 'NOT installed'}`);
@@ -1019,6 +1022,9 @@ function runSetupHook(argv: string[]): void {
     if (!hostOk) { console.error('  status: FAIL — hook host missing'); failures++; }
     if (!sessionStartOk) { console.error('  status: FAIL — SessionStart hook not registered'); failures++; }
     if (!stopOk) { console.error('  status: FAIL — Stop hook not registered'); failures++; }
+    for (const evt of ['Notification', 'Elicitation', 'StopFailure']) {
+      if (!isSetupOurHook(cfg.hooks?.[evt])) { console.error('  missing supported signal hook: ' + evt); failures++; }
+    }
     if (failures > 0) process.exit(1);
     console.log('  status: OK');
     process.exit(0);
@@ -1026,42 +1032,15 @@ function runSetupHook(argv: string[]): void {
 
   // Uninstall: remove only Agent-Attention-owned hook entries, keep the rest.
   if (uninstall) {
-    const cfg = ccReadSettings(settingsPath);
-    const hooks = cfg.hooks || {};
-    const before = JSON.stringify(hooks);
-    for (const evt of ['SessionStart', 'Stop']) {
-      if (Array.isArray(hooks[evt])) {
-        hooks[evt] = hooks[evt].filter(
-          (g) => !(g.hooks || []).some((h) => (h.command || '').includes('daemon-cli.js')),
-        );
-        if (hooks[evt].length === 0) delete hooks[evt];
-      }
-    }
-    if (JSON.stringify(hooks) === before && !fs.existsSync(settingsPath)) {
-      console.log(`No Agent Attention hooks present at ${settingsPath}`);
-      process.exit(0);
-    }
-    ccWriteSettings(settingsPath, cfg);
+    require('./integration/hook-settings').removeClaudeHooks(settingsPath, hookPath);
     console.log(`Uninstalled Agent Attention hooks from ${settingsPath}`);
     process.exit(0);
   }
 
-  // Install: merge into SessionStart/Stop without clobbering other plugins' hooks.
-  const cfg = ccReadSettings(settingsPath);
-  if (!cfg.hooks) cfg.hooks = {};
-  const entries = ccBuildEntries(hookPath);
-  const merged = { ...cfg };
-  merged.hooks = { ...(cfg.hooks || {}) };
-  for (const [evt, newGroups] of Object.entries(entries)) {
-    const existing = (cfg.hooks || {})[evt];
-    if (isSetupOurHook(existing)) continue; // already installed -> idempotent
-    const base = existing && Array.isArray(existing) ? existing : [];
-    merged.hooks[evt] = [...base, ...newGroups];
-  }
-  ccWriteSettings(settingsPath, merged);
+  require('./integration/hook-settings').installClaudeHooks(projectDir || os.homedir(), hookPath);
   console.log(`Installed Agent Attention hook at ${settingsPath}`);
-  console.log(`  SessionStart : node "${hookPath}" hook --session-start`);
-  console.log(`  Stop         : node "${hookPath}" hook`);
+  console.log(`  SessionStart : node "${hookPath}" hook`);
+  console.log('  Signals: Notification(permission_prompt), Elicitation, StopFailure; Stop is not completion');
   process.exit(0);
 }
 function wipeLogs(): void {
@@ -1073,8 +1052,26 @@ function main(): void {
   const args = process.argv.slice(2);
   const command = args[0];
   const subcommand = args[1];
+  if (args.includes('--headless')) process.env.AGENT_ATTENTION_MODE = 'headless';
+  if (command === 'capabilities') { console.log(JSON.stringify(getPlatformCapabilities())); return; }
+  if (isHeadless() && ['observe'].includes(command)) { console.error('Observer is disabled in headless mode'); process.exitCode = 1; return; }
+  if (command === 'events') { console.log(JSON.stringify(require('./state').readState(STATE_PATH))); return; }
+  if (isHeadless()) {
+    if (command === 'daemon') {
+      void headlessCommand(subcommand).catch(err => { console.error(String(err)); process.exitCode = 1; });
+      return;
+    }
+    if (command === 'doctor') { console.log(JSON.stringify(getPlatformCapabilities())); return; }
+    if (command === 'setup' && !subcommand) {
+      console.error('Headless setup has no autostart side effects. Use daemon run or daemon start --headless.'); process.exitCode = 1; return;
+    }
+  }
+  if (process.platform !== 'win32' && !isHeadless() && ['daemon', 'doctor', 'setup'].includes(command) && subcommand !== 'hook') {
+    console.error('Desktop mode is unsupported here. Select --headless or AGENT_ATTENTION_MODE=headless.'); process.exitCode = 1; return;
+  }
 
-  if (!command) {
+
+  if (!command || command === '--help' || command === '-h') {
     console.log('Usage: agent-attention <command> [args]');
     console.log('');
     console.log('Commands:');
@@ -1084,13 +1081,16 @@ function main(): void {
     console.log('  daemon status    Show daemon status');
     console.log('  mark-all-read    Mark all events as read');
     console.log('  mark-event <id>  Mark a single event as read');
-    console.log('  jump <agent-id>  Focus the terminal target of an agent');
+    console.log('  jump <agent-id> [--json]  Attempt focus; fail if foreground not observed');
     console.log('  agent register <id> <name>  Register an agent');
     console.log('  agent list                           List all agents');
     console.log('  agent cleanup                        Remove agents inactive for 7+ days');
     console.log('  agent target set <id> --pid <n>      Set target terminal pid');
     console.log('  agent target clear <id>              Clear target');
     console.log('  logs [n]         Show last N lines of daemon log');
+    console.log('  capabilities [--headless]  Print platform capability JSON');
+    console.log('  events            Query retained state as JSON');
+    console.log('  daemon run|start|stop|restart|status --headless  Explicit Linux lifecycle, no autostart');
     console.log('  doctor           Run health checks');
     console.log('  observe [--watch]  Observe agent states (Attention Observer)');
     console.log('  audit             Audit attention events for noise / missed (Attention Auditor)');
@@ -1112,6 +1112,8 @@ function main(): void {
   // New: Integration management commands
   if (command === 'integration') {
     const subcommand = args[1];
+
+
     const agentId = args[2];
     if (!subcommand) {
       console.log('Usage: agent-attention integration <list|install|uninstall|status> [agent-id]');
@@ -1201,7 +1203,7 @@ function main(): void {
       console.log('Usage: agent-attention jump <agent-id>');
       process.exit(1);
     }
-    jumpToAgent(agentId);
+    jumpToAgent(agentId, args.includes('--json'));
   } else if (command === 'observe') {
     runObserve(args.slice(1));
     return;
@@ -1363,77 +1365,59 @@ function runIntegrationStatus(agentId: string): void {
   console.log(`  ID: ${manifest.id}`);
   console.log(`  Installed: ${installed ? 'Yes' : 'No'}`);
   console.log(`  Level: L${manifest.level} (${manifest.mechanism})`);
-  console.log(`  Reliability: ${reliability}`);
+  console.log(`  Completion evidence: ${reliability}`);
   console.log(`  Events: ${events.join(', ') || 'none'}`);
   console.log(`  Status: ${manifest.status ?? 'experimental'}`);
 }
 
 /**
  * Claude Code hook handler: read JSON from stdin, record an attention event.
- * Used as `command` in hooks.json. Never called directly by users.
+ * Used as `command` in .claude/settings.json. Never called directly by users.
  */
 function runHook(): void {
   const { recordEvent } = require('./state/AttentionState');
-  const { autoDetectAndRegister } = require('./registry');
+  const { HookProvider } = require('./integration/providers');
+  const { getManifest } = require('./integration/catalog');
   const { log, generateCorrelationId } = require('./logging');
-  const os = require('os');
-  const path = require('path');
-
-  const statePath = path.join(
-    process.env.AGENT_ATTENTION_HOME || path.join(os.homedir(), '.agent-attention'),
-    'state.json',
-  );
-
+  const statePath = path.join(STATE_DIR, 'state.json');
   let body = '';
+  let tooLarge = false;
   process.stdin.setEncoding('utf-8');
-  process.stdin.on('data', (chunk: string) => { body += chunk; });
+  process.stdin.on('data', (chunk: string) => {
+    if (body.length + chunk.length > 1024 * 1024) { tooLarge = true; body = ''; }
+    else if (!tooLarge) body += chunk;
+  });
   process.stdin.on('end', () => {
-    if (!body.trim()) { process.exit(0); return; }
-    let payload: any;
-    try { payload = JSON.parse(body); } catch { process.exit(0); return; }
-
-    const status = payload.exitStatus;
-    const turns = payload.turns ?? 0;
-    const sessionId = (payload.sessionId as string | undefined) ?? 'unknown';
-    let event: string;
-    let message: string;
-    let priority: 'P0' | 'P1' | 'P2';
-
-    if (status === 0 && turns > 0) {
-      event = 'completed'; priority = 'P2';
-      message = `Claude Code session ended cleanly (${turns} turn${turns > 1 ? 's' : ''}, session ${sessionId.slice(0, 8)})`;
-    } else if (status === 1) {
-      event = 'failed'; priority = 'P1';
-      message = `Claude Code session failed (exit=${status}, session ${sessionId.slice(0, 8)})`;
-    } else if (status === 2) {
-      event = 'input_required'; priority = 'P0';
-      message = `Claude Code session cancelled by user (session ${sessionId.slice(0, 8)})`;
-    } else {
-      process.exit(0); return;
+    if (tooLarge || !body.trim()) return;
+    let payload: unknown;
+    try { payload = JSON.parse(body); } catch { return; }
+    const manifest = getManifest('claude-code');
+    if (!manifest) return;
+    const parsed = new HookProvider().parseEvent(payload, manifest);
+    if (!parsed) {
+      log({ component: 'hook', level: 'INFO', event: 'hook_ignored', message: 'No supported attention signal; task outcome unknown' });
+      return;
     }
-
-    const resolved = autoDetectAndRegister();
-    const agentId: string = payload.agentId ?? resolved.agentId;
-    const agentName: string = payload.agentName ?? resolved.agentName ?? 'Claude Code';
     const correlationId = generateCorrelationId();
     try {
+      fs.mkdirSync(STATE_DIR, { recursive: true });
       recordEvent(statePath, {
-        type: event as any,
-        priority,
-        agent_id: agentId,
-        agent_name: agentName,
-        title: `${agentName}: ${event}`,
-        message,
-        timestamp: Date.now(),
-        correlation_id: correlationId,
+        type: parsed.event,
+        priority: parsed.event === 'failed' ? 'P1' : 'P0',
+        agent_id: parsed.agentId, agent_name: parsed.agentName,
+        title: `${parsed.agentName}: ${parsed.event}`, message: parsed.message,
+        timestamp: parsed.timestamp, correlation_id: correlationId,
+        session_id: parsed.sessionId, task_id: parsed.taskId,
+        source_event_id: parsed.sourceEventId, source_event: parsed.sourceEvent,
+        evidence: parsed.evidence,
       });
-      log({ component: 'hook', level: 'INFO', event: 'hook_handled', message: `${agentId} → ${event}`, correlation_id: correlationId, context: { sessionId: payload.sessionId, exitStatus: status, turns } });
+      log({ component: 'hook', level: 'INFO', event: 'hook_handled', message: `${parsed.agentId} → ${parsed.event}`, correlation_id: correlationId,
+        context: { session_id: parsed.sessionId, source_event: parsed.sourceEvent, evidence: parsed.evidence } });
     } catch (err) {
       log({ component: 'hook', level: 'ERROR', event: 'hook_failed', message: `failed to record hook event: ${err instanceof Error ? err.message : String(err)}` });
+      process.exitCode = 1;
     }
-    process.exit(0);
   });
 }
 
 main();
-

@@ -1,3 +1,4 @@
+import { resolveStateDir } from './paths';
 /**
  * Command handlers shared between the CLI (daemon-cli.ts) and the IPC RPC layer.
  * M6b: these functions are called both by the Node CLI and by the daemon's
@@ -8,10 +9,11 @@ import * as path from 'path';
 import * as os from 'os';
 import { clearUnread, markRead } from './state/AttentionState';
 import { getAgent } from './registry';
-import { jumpToTarget } from './jump';
+import { JumpResult } from './jump';
+import { activateTarget as jumpToTarget } from './platform';
 import { AgentTarget } from './jump';
 
-const STATE_DIR = path.join(os.homedir(), '.agent-attention');
+const STATE_DIR = resolveStateDir();
 const STATE_PATH = path.join(STATE_DIR, 'state.json');
 
 /**
@@ -39,7 +41,7 @@ export function cmdMarkEvent(eventId: string): { ok: boolean; code: number } {
 /**
  * Jump to an agent's terminal target. Returns { ok, code, error? }.
  */
-export function cmdJump(agentId: string): { ok: boolean; code: number; error?: string } {
+export function cmdJump(agentId: string): { ok: boolean; code: number; error?: string; jump?: JumpResult } {
   const agent = getAgent(agentId);
   if (agent === undefined) {
     return { ok: false, code: 1, error: `Agent "${agentId}" not found` };
@@ -47,8 +49,10 @@ export function cmdJump(agentId: string): { ok: boolean; code: number; error?: s
   if (!agent.target) {
     return { ok: false, code: 1, error: `Agent "${agentId}" has no target` };
   }
-  jumpToTarget(agent.target);
-  return { ok: true, code: 0 };
+  const jump = jumpToTarget(agent.target);
+  return jump.ok
+    ? { ok: true, code: 0, jump }
+    : { ok: false, code: 1, error: `Jump failed: ${jump.reason}`, jump };
 }
 
 /** Dispatch a command by name and args. Used by IPC RPC handler. */

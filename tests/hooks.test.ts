@@ -2,9 +2,7 @@
  * Tests for the Claude Code hook handler (agent-attention hook command).
  *
  * Covers:
- *  - exitStatus 0 → completed event
- *  - exitStatus 1 → failed event
- *  - exitStatus 2 → input_required event
+ *  - legacy exitStatus never proves task outcome
  *  - no exitStatus → ignored
  *  - malformed JSON → silent ignore (exit 0)
  *  - empty stdin → silent ignore (exit 0)
@@ -51,35 +49,10 @@ describe('hook handler', () => {
     return JSON.parse(fs.readFileSync(statePath, 'utf-8'));
   }
 
-  it('exitStatus 0 → completed event', async () => {
-    const { exitCode } = await runHook(JSON.stringify({ sessionId: 's1', exitStatus: 0, turns: 3, agentId: 'claude-code' }));
+  it.each([0, 1, 2])('legacy exitStatus %i is ignored without supported evidence', async (exitStatus) => {
+    const { exitCode } = await runHook(JSON.stringify({ sessionId: 's1', exitStatus, turns: 3, agentId: 'claude-code' }));
     expect(exitCode).toBe(0);
-    const state = readState();
-    expect(state.events.length).toBeGreaterThan(0);
-    const last = state.events[0];
-    expect(last.type).toBe('completed');
-    expect(last.agent_id).toBe('claude-code');
-    expect(last.message).toContain('session ended cleanly');
-    expect(last.priority).toBe('P2');
-  });
-
-  it('exitStatus 1 → failed event', async () => {
-    const { exitCode } = await runHook(JSON.stringify({ sessionId: 's2', exitStatus: 1, agentId: 'codex' }));
-    expect(exitCode).toBe(0);
-    const state = readState();
-    const last = state.events[0];
-    expect(last.type).toBe('failed');
-    expect(last.priority).toBe('P1');
-    expect(last.agent_id).toBe('codex');
-  });
-
-  it('exitStatus 2 → input_required event', async () => {
-    const { exitCode } = await runHook(JSON.stringify({ sessionId: 's3', exitStatus: 2, agentId: 'claude-code' }));
-    expect(exitCode).toBe(0);
-    const state = readState();
-    const last = state.events[0];
-    expect(last.type).toBe('input_required');
-    expect(last.priority).toBe('P0');
+    expect(readState().events).toHaveLength(0);
   });
 
   it('no exitStatus → ignored (no new event)', async () => {
@@ -99,12 +72,11 @@ describe('hook handler', () => {
     expect(exitCode).toBe(0);
   });
 
-  it('autoDetectAndRegister when agentId is missing', async () => {
-    const before = readState().events.length;
-    await runHook(JSON.stringify({ sessionId: 's5', exitStatus: 0, turns: 2 }));
-    const state = readState();
-    const last = state.events[0];
-    expect(last.agent_id).toBeTruthy(); // registered via autoDetectAndRegister
-    expect(last.type).toBe('completed');
+  it('documented source identity overrides invented camelCase payload identity', async () => {
+    await runHook(JSON.stringify({ session_id: 's5', hook_event_name: 'Notification', notification_type: 'permission_prompt', message: 'Please approve', agentId: 'spoof' }));
+    const last = readState().events[0];
+    expect(last.agent_id).toBe('claude-code');
+    expect(last.type).toBe('permission_required');
+    expect(last.session_id).toBe('s5');
   });
 });

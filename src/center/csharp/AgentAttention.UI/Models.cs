@@ -28,6 +28,19 @@ public sealed class StateEvent
     [JsonPropertyName("title")] public string Title { get; set; } = string.Empty;
     [JsonPropertyName("message")] public string Message { get; set; } = string.Empty;
     [JsonPropertyName("read")] public bool Read { get; set; }
+    [JsonPropertyName("session_id")] public string? SessionId { get; set; }
+    [JsonPropertyName("task_id")] public string? TaskId { get; set; }
+    [JsonPropertyName("source_event")] public string? SourceEvent { get; set; }
+    [JsonPropertyName("evidence")] public EventEvidence? Evidence { get; set; }
+
+}
+
+public sealed class EventEvidence
+{
+    [JsonPropertyName("contract")] public string? Contract { get; set; }
+    [JsonPropertyName("mechanism")] public string? Mechanism { get; set; }
+    [JsonPropertyName("basis")] public string? Basis { get; set; }
+    [JsonPropertyName("scope")] public string? Scope { get; set; }
 }
 
 public sealed class AgentRegistry

@@ -1,3 +1,4 @@
+import { resolveStateDir } from '../paths';
 import * as path from 'path';
 import * as os from 'os';
 import notifier from 'node-notifier';
@@ -59,7 +60,7 @@ export async function notify(
 ): Promise<void> {
   const isUrgent = EVENT_PRIORITY[event] === 'P0';
   const cliPath = getDaemonCliPath();
-  const stateDir   = path.join(os.homedir(), '.agent-attention');
+  const stateDir = resolveStateDir();
   const hardTimeout = timeoutMs ?? resolveNotifyTimeoutMs();
 
   await new Promise<void>((resolve) => {

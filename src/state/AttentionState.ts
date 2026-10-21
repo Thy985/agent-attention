@@ -1,5 +1,7 @@
+import { withFileLock } from './file-lock';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
+import type { EventEvidence } from '../integration/types';
 import { log, generateCorrelationId, type LogEntry } from '../logging';
 
 export type EventName = 'completed' | 'permission_required' | 'input_required' | 'failed';
@@ -15,6 +17,11 @@ export interface StateEvent {
   title: string;
   message: string;
   read: boolean;
+  session_id?: string;
+  task_id?: string;
+  source_event_id?: string;
+  source_event?: string;
+  evidence?: EventEvidence;
   correlation_id?: string; // AC-06: links this event to its source notification chain
 }
 
@@ -34,6 +41,11 @@ export interface RecordEventInput {
   title: string;
   message: string;
   timestamp: number;
+  session_id?: string;
+  task_id?: string;
+  source_event_id?: string;
+  source_event?: string;
+  evidence?: EventEvidence;
   correlation_id?: string; // AC-06: optional, auto-generated if missing
 }
 
@@ -46,6 +58,9 @@ const DEFAULT_STATE: State = {
 };
 
 export function readState(statePath: string): State {
+  return withFileLock(statePath, () => readStateUnlocked(statePath));
+}
+function readStateUnlocked(statePath: string): State {
   if (!fs.existsSync(statePath)) {
     return { ...DEFAULT_STATE, updatedAt: Date.now() };
   }
@@ -54,7 +69,10 @@ export function readState(statePath: string): State {
     let raw = fs.readFileSync(statePath, 'utf-8');
     if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
     parsed = JSON.parse(raw) as State;
+    if (!parsed || parsed.version !== 1 || !Array.isArray(parsed.events) || parsed.events.some(e => !e || typeof e.id !== 'string' || typeof e.read !== 'boolean')) throw new Error('Invalid state v1 shape');
   } catch (e) {
+    // Preserve corrupt bytes before a later write recovers to empty state.
+    try { fs.copyFileSync(statePath, statePath + '.corrupt', fs.constants.COPYFILE_EXCL); } catch {}
     log({ component: 'state', level: 'ERROR', event: 'state_read_failed', message: 'state.json corrupted, using defaults', context: { parseErr: e instanceof Error ? e.message : String(e) } });
     return { ...DEFAULT_STATE, updatedAt: Date.now() };
   }
@@ -125,10 +143,21 @@ function atomicWrite(statePath: string, state: State): void {
   }
   try { fs.unlinkSync(tmpPath); } catch {}
   log({ component: 'state', level: 'ERROR', event: 'state_write_failed', message: 'atomic write failed after backoff retries', context: { path: statePath } });
+  throw new Error('Atomic state write failed after backoff retries');
 }
 
 export function recordEvent(statePath: string, input: RecordEventInput): State {
+  return withFileLock(statePath, () => recordEventUnlocked(statePath, input));
+}
+function recordEventUnlocked(statePath: string, input: RecordEventInput): State {
   const current = readState(statePath);
+
+  // Delivery identity is scoped, not message-based. Do not resurrect an already-read retry.
+  if (input.source_event_id && current.events.some(e =>
+    e.source_event_id === input.source_event_id && e.agent_id === input.agent_id &&
+    e.session_id === input.session_id && e.task_id === input.task_id &&
+    e.source_event === input.source_event && e.type === input.type &&
+    e.evidence?.contract === input.evidence?.contract)) return current;
 
   // Generate correlation_id if not provided
   const correlationId = input.correlation_id || generateCorrelationId();
@@ -144,6 +173,11 @@ export function recordEvent(statePath: string, input: RecordEventInput): State {
     message: input.message,
     read: false,
     correlation_id: correlationId,
+    ...(input.session_id ? { session_id: input.session_id } : {}),
+    ...(input.task_id ? { task_id: input.task_id } : {}),
+    ...(input.source_event_id ? { source_event_id: input.source_event_id } : {}),
+    ...(input.source_event ? { source_event: input.source_event } : {}),
+    ...(input.evidence ? { evidence: input.evidence } : {}),
   };
 
   log({
@@ -152,14 +186,14 @@ export function recordEvent(statePath: string, input: RecordEventInput): State {
     event: 'event_recorded',
     message: `${input.agent_id} → ${input.type}: ${input.message.substring(0, 80)}`,
     correlation_id: correlationId,
-    context: { event_id: newEvent.id, type: input.type, priority: input.priority, agent_id: input.agent_id },
+    context: { event_id: newEvent.id, type: input.type, priority: input.priority, agent_id: input.agent_id, session_id: input.session_id, task_id: input.task_id, evidence: input.evidence },
   });
 
   const events = [newEvent, ...current.events].slice(0, MAX_EVENTS);
   const next: State = {
     version: 1,
     updatedAt: input.timestamp,
-    unreadCount: current.unreadCount + 1,
+    unreadCount: events.filter(e => !e.read).length,
     events,
     visible: true,
   };
@@ -168,6 +202,9 @@ export function recordEvent(statePath: string, input: RecordEventInput): State {
 }
 
 export function clearUnread(statePath: string): State {
+  return withFileLock(statePath, () => clearUnreadUnlocked(statePath));
+}
+function clearUnreadUnlocked(statePath: string): State {
   const current = readState(statePath);
   const events = current.events.map((e) => ({ ...e, read: true }));
   const next: State = {
@@ -183,6 +220,9 @@ export function clearUnread(statePath: string): State {
 }
 
 export function clearAll(statePath: string): State {
+  return withFileLock(statePath, () => clearAllUnlocked(statePath));
+}
+function clearAllUnlocked(statePath: string): State {
   const next: State = {
     version: 1,
     updatedAt: Date.now(),
@@ -196,6 +236,9 @@ export function clearAll(statePath: string): State {
 }
 
 export function markRead(statePath: string, eventId: string): State {
+  return withFileLock(statePath, () => markReadUnlocked(statePath, eventId));
+}
+function markReadUnlocked(statePath: string, eventId: string): State {
   const current = readState(statePath);
   const event = current.events.find((e) => e.id === eventId);
   if (!event || event.read) {
@@ -227,6 +270,9 @@ export function countUnreadByAgent(statePath: string, agentId: string): number {
 }
 
 export function markAgentEventsRead(statePath: string, agentId: string): State {
+  return withFileLock(statePath, () => markAgentEventsReadUnlocked(statePath, agentId));
+}
+function markAgentEventsReadUnlocked(statePath: string, agentId: string): State {
   const current = readState(statePath);
   const agentEvents = current.events.filter((e) => e.agent_id === agentId);
   const unreadForAgent = agentEvents.filter((e) => !e.read).length;

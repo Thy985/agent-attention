@@ -3,6 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
+import { StringDecoder } from 'string_decoder';
 import { log } from '../logging';
 
 const AUTH_SECRET_PATH = 'ipc-auth.secret';
@@ -30,6 +31,7 @@ function fileSha256(filePath: string): string {
 interface PipeState {
   server: net.Server | null;
   clients: Map<string, net.Socket>;
+  connections: Set<net.Socket>;
   stopped: boolean;
   token: string;
 }
@@ -70,57 +72,59 @@ export async function executeRpcCommand(
   }
 }
 
-/** Start the IPC server. On Windows uses Named Pipes; elsewhere uses TCP. */
+/** Authenticated loopback TCP for Windows desktop or explicitly selected headless mode. */
 export function startPipeServer(stateDir: string): void {
   _state = null;
   _port = 0;
   const statePath = path.join(stateDir, 'state.json');
 
-  _state = { server: null, clients: new Map(), stopped: false, token: crypto.randomBytes(32).toString('hex') };
+  _state = { server: null, clients: new Map(), connections: new Set(), stopped: false, token: crypto.randomBytes(32).toString('hex') };
 
   const isWindows = process.platform === 'win32';
 
-  if (isWindows) {
+  if (isWindows || process.env.AGENT_ATTENTION_MODE === 'headless') {
     try {
       const token = getUserToken();
-      const port = 35000 + Math.floor(Math.random() * 10000);
+      const port = isWindows ? 35000 + Math.floor(Math.random() * 10000) : 0;
 
+      const sessionState = _state;
       const server = net.createServer((socket: net.Socket) => {
         const clientId = `${socket.remoteAddress}:${socket.remotePort}`;
-        _state!.clients.set(clientId, socket);
+        sessionState.connections.add(socket);
+        socket.setTimeout(5000, () => socket.destroy());
+        let authorized = false;
+        let rejected = false;
+        let pending = '';
+        const decoder = new StringDecoder('utf8');
+        const maxFrameBytes = 1024 * 1024;
+        const reject = (): void => {
+          rejected = true;
+          sessionState.clients.delete(clientId);
+          // No command, state snapshot or broadcast is allowed before authentication.
+          socket.end(JSON.stringify({ type: 'auth-rejected' }) + '\n');
+          socket.setTimeout(500, () => socket.destroy());
+        };
         daemonLog(`ipc client connected: ${clientId}`);
 
-        socket.on('data', (data: Buffer) => {
-          // M8 P0: require token handshake before accepting commands
-          if (!(socket as any).authorized) {
-            try {
-              const raw = data.toString();
-              const msg = JSON.parse(raw);
-              if (msg.type === 'hello' && msg.token === _state!.token) {
-                (socket as any).authorized = true;
-                log({ component: 'ipc', level: 'INFO', event: 'auth_ok', message: 'IPC auth successful', context: { client: clientId } });
-                return;
-              }
+        const handleFrame = (line: string): void => {
+          let msg: any;
+          try { msg = JSON.parse(line); }
+          catch { reject(); return; }
+          if (!msg || typeof msg !== 'object' || Array.isArray(msg)) { reject(); return; }
+          if (!authorized) {
+            if (msg.type !== 'hello' || msg.token !== sessionState.token) {
               log({ component: 'ipc', level: 'ERROR', event: 'auth_failed', message: 'IPC auth rejected', context: { client: clientId } });
-              daemonLog(`ipc unauthorized connection from ${clientId}`);
-              // Send auth-rejected before destroy so client can detect rejection
-              try {
-                socket.write(JSON.stringify({ type: 'auth-rejected' }) + '\n');
-              } catch {}
-              const _p1 = socket;
-              setTimeout(() => { try { _p1.destroy(); } catch {} }, 500);
-            } catch {
-              daemonLog(`ipc malformed hello from ${clientId}`);
-              try {
-                socket.write(JSON.stringify({ type: 'auth-rejected' }) + '\n');
-              } catch {}
-              const _p2 = socket;
-              setTimeout(() => { try { _p2.destroy(); } catch {} }, 500);
+              reject();
+              return;
             }
+            authorized = true;
+            socket.setTimeout(0);
+            log({ component: 'ipc', level: 'INFO', event: 'auth_ok', message: 'IPC auth successful', context: { client: clientId } });
+            return;
           }
           try {
-            const msg = JSON.parse(data.toString());
             if (msg.type === 'subscribe') {
+              sessionState.clients.set(clientId, socket);
               // M5: send daemon-status:alive then full state snapshot
               try {
                 const aliveMsg = JSON.stringify({
@@ -149,7 +153,11 @@ export function startPipeServer(stateDir: string): void {
                 socket.write(nack + '\n');
                 return;
               }
-              handler(msg.args ?? []).then(result => {
+              if (msg.args !== undefined && (!Array.isArray(msg.args) || !msg.args.every((arg: unknown) => typeof arg === 'string'))) {
+                socket.write(JSON.stringify({ type: 'cmd-ack', requestId: msg.requestId, ok: false, code: 1, error: 'args must be an array of strings' }) + '\n');
+                return;
+              }
+              Promise.resolve().then(() => handler(msg.args ?? [])).then(result => {
                 const ack = JSON.stringify({
                   type: 'cmd-ack', requestId: msg.requestId, ...result,
                 });
@@ -162,32 +170,46 @@ export function startPipeServer(stateDir: string): void {
                 socket.write(nack + '\n');
               });
             }
-          } catch {}
+          } catch (err) { daemonLog(`ipc frame failed: ${err}`); }
+        };
+
+        socket.on('data', (data: Buffer) => {
+          if (rejected) return;
+          pending += decoder.write(data);
+          let newline: number;
+          while ((newline = pending.indexOf('\n')) !== -1) {
+            const line = pending.slice(0, newline);
+            pending = pending.slice(newline + 1);
+            if (Buffer.byteLength(line, 'utf8') > maxFrameBytes) { reject(); return; }
+            if (line.trim()) handleFrame(line);
+            if (rejected) return;
+          }
+          if (Buffer.byteLength(pending, 'utf8') > maxFrameBytes) reject();
         });
 
         socket.on('close', () => {
-          _state!.clients.delete(clientId);
+          sessionState.clients.delete(clientId);
+          sessionState.connections.delete(socket);
         });
 
         socket.on('error', () => {
-          _state!.clients.delete(clientId);
+          sessionState.clients.delete(clientId);
+          sessionState.connections.delete(socket);
         });
       });
 
-      server.on('error', (err) => {
-        daemonLog(`ipc server error: ${err.message}`);
-      });
-
+      server.on('error', err => { daemonLog(`ipc listen failed: ${err}`); stopPipeServer(); });
       server.listen(port, '127.0.0.1', () => {
         const addr = server.address() as net.AddressInfo;
         _port = addr.port;
         try {
-          const portFile = path.join(stateDir, 'ipc-port.txt');
-          fs.writeFileSync(portFile, String(addr.port));
-          // M8 P0: write auth secret for same-user IPC authentication
           const authFile = path.join(stateDir, AUTH_SECRET_PATH);
-          try { fs.writeFileSync(authFile, _state!.token, { mode: 0o600 }); } catch {}
-        } catch {}
+          fs.writeFileSync(authFile, _state!.token, { mode: 0o600 });
+          fs.chmodSync(authFile, 0o600);
+          const portFile = path.join(stateDir, 'ipc-port.txt');
+          fs.writeFileSync(portFile, String(addr.port), { mode: 0o600 });
+          fs.chmodSync(portFile, 0o600);
+        } catch (err) { daemonLog(`ipc discovery write failed: ${err}`); stopPipeServer(); return; }
         daemonLog(`ipc listening on 127.0.0.1:${addr.port}`);
         _state!.server = server;
       });
@@ -238,13 +260,7 @@ export function pushStateToClients(stateDir: string): void {
     for (const [id, socket] of _state.clients) {
       try {
         if (!socket.destroyed && socket.writable) {
-          const client = net.createConnection(_port, '127.0.0.1');
-          client.once('connect', () => {
-            client.write(msg + '\n');
-            client.end();
-          });
-          client.once('error', () => {});
-          client.setTimeout(500, () => { client.destroy(); });
+          socket.write(msg + '\n');
         }
       } catch {}
     }
@@ -281,16 +297,16 @@ export function watchRegistryForNotifications(stateDir: string): void {
 
 /** Stop the IPC server. */
 export function stopPipeServer(): void {
-  _port = 0;
   if (!_state) return;
-  _state.stopped = true;
   emitNotification('', 'daemon-status', { status: 'stopping' });
-  for (const [, socket] of _state.clients) {
+  _state.stopped = true;
+  for (const socket of _state.connections) {
     try { socket.destroy(); } catch {}
   }
   _state.clients.clear();
+  _state.connections.clear();
   if (_state.server) {
-    _state.server.close(() => { _state!.server = null; });
+    _state.server.close();
     _state.server = null;
   }
   _port = 0;

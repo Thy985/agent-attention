@@ -1,60 +1,23 @@
-﻿/**
- * Regression test: verify ContextMenuStrip leak does not grow unboundedly.
- *
- * A4 D8: TrayController.UpdateMenu() creates a new ContextMenuStrip every 500ms
- * and assigns it to _notifyIcon.ContextMenuStrip without disposing the old one.
- * Over long runs this leaks ~0.08 GDI handles per cycle (~600 handles in 100 min).
- *
- * This test does NOT fix the leak (deferred to v0.4) — it documents the bound
- * and will catch regression if the per-cycle cost increases.
+/**
+ * Source wiring guards only. The former toy JS allocation/heapUsed test never
+ * called TrayController or measured GDI handles; it sampled Jest/V8 GC timing.
+ * Production OwnedResource lifetime and StateStore recovery are exercised by
+ * tests/ui-contract-harness. Actual ContextMenuStrip disposal is covered by the
+ * Windows UI harness, which must run on Windows; neither is a GDI leak measurement.
  */
-
 import * as fs from 'fs';
 import * as path from 'path';
 
-describe('A4 D8 — ContextMenuStrip handle leak regression', () => {
-  const CYCLES = 50;
-  const HANDLE_GROWTH_PER_CYCLE_THRESHOLD = 5; // conservative upper bound
+describe('Tray lifetime and build source wiring (not native leak measurement)', () => {
+  const tray = fs.readFileSync(path.join(__dirname, '../src/center/csharp/AgentAttention.UI/TrayController.cs'), 'utf8');
 
-  /**
-   * Simulate the pattern used by TrayController.UpdateMenu():
-   * create a new ContextMenuStrip, add items, discard reference.
-   * Measures GDI object count before and after.
-   *
-   * NOTE: Full GDI counting requires native APIs; here we verify the pattern
-   * is bounded by checking that 50 cycles produce at most a small delta.
-   */
-  it('should not leak excessively — 50 ContextMenuStrip allocations', () => {
-    // We cannot directly count GDI handles from Node.js in this sandbox,
-    // but we can verify that the allocation pattern itself is stable
-    // (no unbounded array/object accumulation in the JS side).
-    // The actual leak is in the C# native side; this test ensures the
-    // TypeScript layer does not compound it.
-
-    const allocations: any[] = [];
-    for (let i = 0; i < CYCLES; i++) {
-      // Simulate: new ContextMenuStrip() + add items + lose reference
-      allocations.push({
-        type: 'ContextMenuStrip-sim',
-        index: i,
-        items: ['Open Center', `Mark read — evt-${i}`, new Array(100).join('x')],
-      });
-    }
-    // All allocations are still in scope — no leak visible from JS side
-    expect(allocations.length).toBe(CYCLES);
+  it('hands replacement menus to the production resource owner after installing them', () => {
+    expect(tray).toContain('OwnedResource<WinForms.ContextMenuStrip>');
+    expect(tray).toMatch(/_notifyIcon\.ContextMenuStrip\s*=\s*menu;\s*_menu\.Replace\(menu\);/);
   });
 
-  it('should produce stable memory after repeated allocations', () => {
-    let before = process.memoryUsage().heapUsed;
-    for (let i = 0; i < CYCLES; i++) {
-      // Allocate and immediately discard
-      const arr = new Array(1000).fill(i);
-      void arr; // simulate work without keeping reference
-    }
-    const after = process.memoryUsage().heapUsed;
-    // Allow some GC variance but flag if growth is > 10x cycle count in MB
-    const growthMB = (after - before) / 1024 / 1024;
-    expect(growthMB).toBeLessThan(CYCLES * 0.01); // < 0.5 MB for 50 cycles
+  it('detaches and disposes the owned final menu when the tray is disposed', () => {
+    expect(tray).toMatch(/public void Dispose\(\)[\s\S]*?_notifyIcon\.ContextMenuStrip\s*=\s*null;\s*_menu\.Dispose\(\);/);
   });
 
   it('should confirm C# build artifacts include HighDpi props (A3 D7)', () => {

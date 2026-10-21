@@ -1,3 +1,4 @@
+import { resolveStateDir } from './paths';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -28,7 +29,7 @@ let _level: LogLevel = 'INFO';
  * during the test suite.
  */
 function logFilePath(): string {
-  const base = process.env.AGENT_ATTENTION_HOME || path.join(os.homedir(), '.agent-attention');
+  const base = resolveStateDir();
   return path.join(base, 'logs', 'runtime.jsonl');
 }
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { resolveStateDir } from '../paths';
 /**
  * Deterministic Fake Agent — validates the Observer state machine with
  * controlled scenarios, so "is the algorithm right?" is decoupled from
@@ -34,8 +35,7 @@ import { appendHeartbeat } from '../observer/collector';
 import { recordEvent } from '../state';
 import { log } from '../logging';
 
-const STATE_DIR = process.env.AGENT_ATTENTION_HOME
-  ?? path.join(os.homedir(), '.agent-attention');
+const STATE_DIR = resolveStateDir();
 const STATE_PATH = path.join(STATE_DIR, 'state.json');
 
 interface ParsedArgs {

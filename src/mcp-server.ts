@@ -1,3 +1,5 @@
+#!/usr/bin/env node
+import { resolveStateDir } from './paths';
 /**
  * Agent Attention MCP Server — @modelcontextprotocol/sdk
  *
@@ -29,8 +31,7 @@ import { log } from './logging';
 // ── paths ──────────────────────────────────────────────────────────────────
 
 function stateDir(): string {
-  return process.env.AGENT_ATTENTION_STATE_DIR
-    ?? path.join(os.homedir(), '.agent-attention');
+  return resolveStateDir();
 }
 
 function statePath(): string {
@@ -131,7 +132,7 @@ async function handleGetEvents(args: {
   if (args.agentId) {
     events = events.filter((e) => e.agent_id === args.agentId);
   }
-  events = events.slice(-limit);
+  events = events.slice(0, limit);
 
   const payload = {
     unreadCount: state.unreadCount,

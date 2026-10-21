@@ -1,3 +1,5 @@
+import { withFileLock } from './state/file-lock';
+import { resolveStateDir } from './paths';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -50,19 +52,22 @@ const REGISTRY_VERSION = 3;
 
 function getRegistryPath(): string {
   return path.join(
-    process.env.AGENT_ATTENTION_HOME || path.join(os.homedir(), '.agent-attention'),
+    resolveStateDir(),
     'agents.json',
   );
 }
 
 function getIntegrationsPath(): string {
   return path.join(
-    process.env.AGENT_ATTENTION_HOME || path.join(os.homedir(), '.agent-attention'),
+    resolveStateDir(),
     'integrations.json',
   );
 }
 
 export function writeRegistry(registry: AgentRegistry): void {
+  return withFileLock(getRegistryPath(), () => writeRegistryUnlocked(registry));
+}
+function writeRegistryUnlocked(registry: AgentRegistry): void {
   const registryPath = getRegistryPath();
   fs.mkdirSync(path.dirname(registryPath), { recursive: true });
   // P3-8 fix: use atomic write (tmp + rename) to prevent corruption from concurrent writes.
@@ -73,8 +78,7 @@ export function writeRegistry(registry: AgentRegistry): void {
     fs.renameSync(tmpPath, registryPath);
   } catch (err) {
     try { fs.unlinkSync(tmpPath); } catch {}
-    // Fallback to direct write if rename fails (e.g., cross-device)
-    fs.writeFileSync(registryPath, JSON.stringify(registry, null, 2), 'utf-8');
+    throw err; // never fall back to a partially visible, non-atomic write
   }
 }
 
@@ -118,6 +122,9 @@ function deleteLegacyIntegrations(): void {
  *    the matching agent record, then delete the legacy file.
  */
 export function readRegistry(): AgentRegistry {
+  return withFileLock(getRegistryPath(), () => readRegistryUnlocked());
+}
+function readRegistryUnlocked(): AgentRegistry {
   let registry: AgentRegistry | null = null;
 
   if (fs.existsSync(getRegistryPath())) {
@@ -196,11 +203,10 @@ export interface RegisterOptions {
  * inferred by the Runtime. The Agent supplies its own agent_id + name;
  * binary/integration are optional metadata for tooling.
  */
-export function registerAgent(
-  agentId: string,
-  name: string,
-  options?: RegisterOptions,
-): Agent {
+export function registerAgent(agentId: string, name: string, options?: RegisterOptions): Agent {
+  return withFileLock(getRegistryPath(), () => registerAgentUnlocked(agentId, name, options));
+}
+function registerAgentUnlocked(agentId: string, name: string, options?: RegisterOptions): Agent {
   const registry = readRegistry();
   const now = Date.now();
   const incomingBinary = options?.binary !== undefined ? options.binary : undefined;
@@ -251,6 +257,9 @@ export function getAgent(agentId: string): Agent | undefined {
  * Throws if the agent does not exist.
  */
 export function updateAgentTarget(agentId: string, target: AgentTarget | null): void {
+  return withFileLock(getRegistryPath(), () => updateAgentTargetUnlocked(agentId, target));
+}
+function updateAgentTargetUnlocked(agentId: string, target: AgentTarget | null): void {
   const registry = readRegistry();
   const agent = registry.agents.find((a) => a.agent_id === agentId);
   if (!agent) {

@@ -1,3 +1,4 @@
+import { resolveStateDir } from '../paths';
 /**
  * `agent-attention audit` — Phase 1 CLI for the Attention Auditor.
  *
@@ -64,7 +65,7 @@ export function runAuditCli(args: string[]): void {
   };
   const newStatus = statusMap[action];
   all[idx] = { ...all[idx], status: newStatus };
-  const p = path.join(os.homedir(), '.agent-attention', 'audit.jsonl');
+  const p = path.join(resolveStateDir(), 'audit.jsonl');
   fs.mkdirSync(path.dirname(p), { recursive: true });
   fs.writeFileSync(p, all.map((f) => JSON.stringify(f)).join('\n') + '\n', 'utf-8');
   console.log(`Updated ${id} → ${newStatus}`);

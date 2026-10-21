@@ -65,14 +65,12 @@ internal static class Program
             Log("activation event created");
 
             var store=new StateStore(options);
-            IpcClient? ipc=null;
             var stateDir=Path.GetDirectoryName(options.StatePath);
-            if(!string.IsNullOrWhiteSpace(stateDir)&&IpcClient.CanConnect(stateDir))
-            {
-                ipc=new IpcClient(stateDir,store);
-            }
+            using var ipc=!string.IsNullOrWhiteSpace(stateDir)&&IpcClient.CanConnect(stateDir)
+                ?new IpcClient(stateDir,store)
+                :null;
             var cliRunner=new CliCommandRunner(options.CliPath);
-            var commands=new CommandRunner(ipc,cliRunner.MarkAllRead,cliRunner.MarkRead,cliRunner.Jump);
+            var commands=new CommandRunner(ipc,cliRunner);
             var window=new CenterWindow(store,commands);
             Log("window constructed");
             window.Closed+=(_,_)=>Log("window closed");
@@ -142,6 +140,9 @@ internal static class Program
             activationTimer.Start();
             Log("activation timer started");
 
+            // The command runner's client must actually subscribe to become connected.
+            // It is disposed when the UI message loop exits (including failures).
+            ipc?.Start();
             tray.Start();
             Log("tray started");
             if(options.OpenCenter)

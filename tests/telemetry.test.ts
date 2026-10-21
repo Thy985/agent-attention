@@ -1,7 +1,11 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import {
+// These tests never read/reset the real user's telemetry or disregard the canonical path.
+const testHome = fs.mkdtempSync(path.join(os.tmpdir(), 'aa-telemetry-'));
+const previousHome = process.env.AGENT_ATTENTION_HOME;
+process.env.AGENT_ATTENTION_HOME = testHome;
+const {
   loadTelemetry,
   saveTelemetry,
   recordCrash,
@@ -13,10 +17,14 @@ import {
   recordIconState,
   recordHandleCount,
   resetTelemetry,
-} from '../src/telemetry';
+} = require('../src/telemetry');
+afterAll(() => {
+  if (previousHome === undefined) delete process.env.AGENT_ATTENTION_HOME; else process.env.AGENT_ATTENTION_HOME = previousHome;
+  fs.rmSync(testHome, { recursive: true, force: true });
+});
 
 describe('telemetry (M7)', () => {
-  const TELEMETRY_PATH = path.join(os.homedir(), '.agent-attention', 'telemetry.json');
+  const TELEMETRY_PATH = path.join(testHome, 'telemetry.json');
 
   beforeEach(() => {
     resetTelemetry();
