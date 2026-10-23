@@ -1,3 +1,4 @@
+import { resolveStateDir } from '../paths';
 /**
  * `agent-attention observe` — Phase 1 one-shot / watch CLI.
  *
@@ -16,8 +17,7 @@ import { observeAgent } from './state-machine';
 import { evaluatePolicy } from './policy';
 
 function stateDir(): string {
-  return process.env.AGENT_ATTENTION_HOME
-    ?? path.join(os.homedir(), '.agent-attention');
+  return resolveStateDir();
 }
 
 function observeJsonlPath(): string {

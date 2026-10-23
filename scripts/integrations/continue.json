@@ -9,17 +9,29 @@
   "level": 1,
   "mechanism": "skill",
   "interfaces": {
-    "mcp": ["continue-sdk"],
-    "ide": ["VS Code extension", "JetBrains plugin"],
-    "skill": [".continue/skills"]
+    "mcp": [
+      "continue-sdk"
+    ],
+    "ide": [
+      "VS Code extension",
+      "JetBrains plugin"
+    ],
+    "skill": [
+      ".continue/skills"
+    ]
   },
-  "events": {
-    "completed": "best_effort",
-    "failed": "best_effort"
-  },
+  "events": {},
   "installInstructions": "Install Continue extension in your IDE.\nAdd agent-attention skill to .continue/skills/agent-attention/SKILL.md\nNote: Continue is IDE-only; use wrapper for CLI sessions.",
   "injectAgentId": false,
-  "tags": ["typescript", "mcp", "ide", "extension"],
-  "docs": ["https://continue.dev/docs/"],
-  "status": "experimental"
+  "tags": [
+    "typescript",
+    "mcp",
+    "ide",
+    "extension"
+  ],
+  "docs": [
+    "https://continue.dev/docs/"
+  ],
+  "status": "experimental",
+  "evidenceContract": "unverified; use explicit CLI reporting"
 }

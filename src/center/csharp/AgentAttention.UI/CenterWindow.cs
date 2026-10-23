@@ -1,4 +1,8 @@
 using System.Collections.Generic;
+using System.Text.Json;
+using System.Threading.Tasks;
+using System.Windows.Automation;
+using System.Windows.Automation.Peers;
 using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
@@ -24,6 +28,13 @@ public sealed class CenterWindow : Window
     private readonly StackPanel _eventList = new();
     private readonly List<string> _visibleEventIds = new();
     private string? _selectedAgentId;
+    private readonly TextBlock _connection = new() { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(14, 4, 14, 0), FontSize = 11 };
+    private readonly TextBlock _status = new() { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(14, 8, 14, 8), FontSize = 12 };
+    private readonly WpfButton _markAllButton = new();
+    private string? _renderSignature;
+    private int _pendingCommands;
+    private bool _dataUnavailable;
+
 
     public CenterWindow(StateStore store, CommandRunner commands)
     {
@@ -31,24 +42,18 @@ public sealed class CenterWindow : Window
         _commands = commands;
 
         Title = "Agent Attention Center";
-        Width = 480;
+        Width = 640;
         Height = 560;
-        MinWidth = 400;
+        MinWidth = 480;
         MinHeight = 340;
-        ResizeMode = ResizeMode.NoResize;
+        ResizeMode = ResizeMode.CanResize;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         Background = new SolidColorBrush(WpfColor.FromRgb(20, 22, 28));
 
-        var markAllButton = new WpfButton
-        {
-            Content = "Mark all read",
-            Padding = new Thickness(10, 4, 10, 4),
-            Background = new SolidColorBrush(WpfColor.FromRgb(58, 110, 165)),
-            Foreground = WpfBrushes.White,
-            BorderThickness = new Thickness(0),
-            FontSize = 11,
-        };
-        markAllButton.Click += (_, _) => { _commands.MarkAllRead(); Hide(); };
+        var markAllButton = _markAllButton;
+        ConfigureMarkAllButton(markAllButton);
+        markAllButton.Click += async (_, _) => await RunActionAsync(markAllButton, "Saving read state…", _commands.MarkAllReadAsync);
+        AutomationProperties.SetName(markAllButton, "Mark all notifications read. This does not resolve tasks.");
 
         var headerGrid = new Grid();
         headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -71,18 +76,11 @@ public sealed class CenterWindow : Window
             Padding = new Thickness(0, 0, 0, 10),
         };
 
-        var agentsLabel = new TextBlock
-        {
-            Text = "AGENTS",
-            Foreground = new SolidColorBrush(WpfColor.FromRgb(100, 105, 115)),
-            FontSize = 10,
-            FontWeight = FontWeights.Bold,
-            Margin = new Thickness(14, 8, 0, 4),
-        };
-
         var agentScroll = new ScrollViewer
         {
-            VerticalScrollBarVisibility = ScrollBarVisibility.Hidden,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            MaxHeight = 140,
+            ToolTip = "Agents — select a name to filter notifications",
             Background = null,
             BorderThickness = new Thickness(0),
             Padding = new Thickness(0),
@@ -101,7 +99,7 @@ public sealed class CenterWindow : Window
         var eventsLabel = new TextBlock
         {
             Text = "RECENT ATTENTION",
-            Foreground = new SolidColorBrush(WpfColor.FromRgb(100, 105, 115)),
+            Foreground = new SolidColorBrush(WpfColor.FromRgb(165, 175, 190)),
             FontSize = 10,
             FontWeight = FontWeights.Bold,
             Margin = new Thickness(14, 10, 0, 4),
@@ -121,16 +119,23 @@ public sealed class CenterWindow : Window
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
         Grid.SetRow(headerBorder, 0);
         Grid.SetRow(agentsPanel, 1);
         Grid.SetRow(eventsLabel, 2);
         Grid.SetRow(eventScroll, 3);
+        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        Grid.SetRow(_connection, 4);
+        Grid.SetRow(_status, 5);
+        AutomationProperties.SetLiveSetting(_status, AutomationLiveSetting.Polite);
 
         root.Children.Add(headerBorder);
         root.Children.Add(agentsPanel);
         root.Children.Add(eventsLabel);
         root.Children.Add(eventScroll);
+        root.Children.Add(_connection);
+        root.Children.Add(_status);
 
         Content = root;
 
@@ -149,10 +154,39 @@ public sealed class CenterWindow : Window
 
     public void Refresh()
     {
+        _connection.Text = _commands.IsConnected ? "Live updates connected"
+            : "Live updates disconnected — showing saved local data; commands use the local CLI.";
+        _connection.Foreground = _commands.IsConnected ? WpfBrushes.LightGray : WpfBrushes.Orange;
         var snapshot = _store.ReadCenterSnapshot();
         UpdateTitle(snapshot.State.UnreadCount);
+        _dataUnavailable = snapshot.Error != null;
+        _eventList.IsEnabled = !_dataUnavailable && _pendingCommands == 0;
+        _markAllButton.IsEnabled = !_dataUnavailable && snapshot.State.UnreadCount > 0 && _pendingCommands == 0;
+        if (_dataUnavailable)
+        {
+            _title.Text = "Current data unavailable";
+            var errorChanged = _status.Text != snapshot.Error;
+            _status.Text = snapshot.Error;
+            _status.Foreground = WpfBrushes.Orange;
+            if (errorChanged) AnnounceStatus();
+            return;
+        }
+        if (_status.Text.StartsWith("Cannot load current data"))
+        {
+            _status.Text = "Connection to local data restored.";
+            _status.Foreground = WpfBrushes.LightGray;
+            AnnounceStatus();
+        }
+        // Unchanged polling must not destroy the focused button or its keyboard focus every two seconds.
+        var signature = JsonSerializer.Serialize(new { snapshot.State, snapshot.Registry, _selectedAgentId,
+            Minute = DateTimeOffset.Now.ToUnixTimeSeconds() / 60 }, Json.Options);
+        if (signature == _renderSignature || _pendingCommands > 0) return;
+        _renderSignature = signature;
+        var focusId = (Keyboard.FocusedElement as FrameworkElement)?.Uid;
         RenderAgents(snapshot.Agents);
         RenderEvents(snapshot.State.Events, snapshot.Registry);
+        if (!string.IsNullOrEmpty(focusId))
+            FindFocusable(this, focusId)?.Focus();
     }
 
     private void UpdateTitle(int unreadCount)
@@ -161,7 +195,7 @@ public sealed class CenterWindow : Window
             ? "Agent Attention Center"
             : $"Agent Attention Center ({unreadCount})";
         _title.Text = unreadCount == 0
-            ? "All caught up"
+            ? "No unread notifications"
             : $"{unreadCount} unread";
     }
 
@@ -174,7 +208,7 @@ public sealed class CenterWindow : Window
             _agentList.Children.Add(new TextBlock
             {
                 Text = "No agents registered yet",
-                Foreground = new SolidColorBrush(WpfColor.FromRgb(80, 85, 95)),
+                Foreground = new SolidColorBrush(WpfColor.FromRgb(165, 175, 190)),
                 FontSize = 12,
                 Margin = new Thickness(0, 8, 0, 0),
             });
@@ -190,7 +224,7 @@ public sealed class CenterWindow : Window
         var hasUnread = agent.UnreadCount > 0;
         var isSelected = _selectedAgentId == agent.AgentId;
         var dotColor = hasUnread
-            ? WpfColor.FromRgb(235, 75, 80)
+            ? WpfColor.FromRgb(255, 118, 125)
             : WpfColor.FromRgb(88, 166, 255);
 
         var dot = new WpfEllipse
@@ -204,6 +238,8 @@ public sealed class CenterWindow : Window
         var nameLabel = new TextBlock
         {
             Text = agent.Name,
+            TextWrapping = TextWrapping.Wrap,
+            MaxWidth = 240,
             Foreground = new SolidColorBrush(isSelected ? WpfColor.FromRgb(235, 238, 245) : WpfColor.FromRgb(200, 203, 210)),
             FontSize = 13,
             FontWeight = isSelected ? FontWeights.SemiBold : FontWeights.Regular,
@@ -227,7 +263,7 @@ public sealed class CenterWindow : Window
         var activeLabel = new TextBlock
         {
             Text = $"  ·  {agent.LastActiveAge}",
-            Foreground = new SolidColorBrush(WpfColor.FromRgb(100, 105, 115)),
+            Foreground = new SolidColorBrush(WpfColor.FromRgb(165, 175, 190)),
             FontSize = 11,
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(unreadLabel == null ? 8 : 0, 0, 0, 0),
@@ -258,13 +294,21 @@ public sealed class CenterWindow : Window
 
         border.MouseEnter += (_, _) => { if (!isSelected) border.Background = new SolidColorBrush(WpfColor.FromRgb(33, 37, 47)); };
         border.MouseLeave += (_, _) => { if (!isSelected) border.Background = bg; };
-        border.MouseLeftButtonDown += (_, _) =>
+        var selectButton = new WpfButton
+        {
+            Content = border, HorizontalContentAlignment = System.Windows.HorizontalAlignment.Stretch,
+            Background = WpfBrushes.Transparent, BorderThickness = new Thickness(0), Padding = new Thickness(0),
+            Uid = "agent:" + agent.AgentId,
+            ToolTip = "Filter notifications from " + agent.Name + "; activate again to clear the filter.",
+        };
+        AutomationProperties.SetName(selectButton, (isSelected ? "Clear filter for " : "Filter by ") + agent.Name);
+        selectButton.Click += (_, _) =>
         {
             _selectedAgentId = isSelected ? null : agent.AgentId;
             Refresh();
         };
 
-        return border;
+        return selectButton;
     }
 
     private void RenderEvents(List<StateEvent> events, AgentRegistry registry)
@@ -281,8 +325,8 @@ public sealed class CenterWindow : Window
         {
             _eventList.Children.Add(new TextBlock
             {
-                Text = _selectedAgentId == null ? "等待 Agent 发来通知" : "No events for this agent",
-                Foreground = new SolidColorBrush(WpfColor.FromRgb(80, 85, 95)),
+                Text = _selectedAgentId == null ? "Waiting for an Agent notification" : "No events for this agent",
+                Foreground = new SolidColorBrush(WpfColor.FromRgb(165, 175, 190)),
                 FontSize = 12,
                 Margin = new Thickness(0, 16, 0, 0),
                 HorizontalAlignment = System.Windows.HorizontalAlignment.Center,
@@ -290,7 +334,7 @@ public sealed class CenterWindow : Window
             return;
         }
 
-        foreach (var item in filtered.Take(20))
+        foreach (var item in EventPresentation.Order(filtered).Take(20))
         {
             _visibleEventIds.Add(item.Id);
             _eventList.Children.Add(CreateEventCard(item, registry));
@@ -301,7 +345,7 @@ public sealed class CenterWindow : Window
             _eventList.Children.Add(new TextBlock
             {
                 Text = $"...and {filtered.Count - 20} more",
-                Foreground = new SolidColorBrush(WpfColor.FromRgb(80, 85, 95)),
+                Foreground = new SolidColorBrush(WpfColor.FromRgb(165, 175, 190)),
                 FontSize = 11,
                 Margin = new Thickness(0, 4, 0, 0),
             });
@@ -317,14 +361,9 @@ public sealed class CenterWindow : Window
         var isUnread = !item.Read;
         var isP0 = item.Priority == "P0";
         var isP1 = item.Priority == "P1";
-        var priorityColor = isP0 ? WpfColor.FromRgb(235, 75, 80) : isP1 ? WpfColor.FromRgb(230, 145, 56) : WpfColor.FromRgb(88, 166, 255);
+        var priorityColor = isP0 ? WpfColor.FromRgb(255, 118, 125) : isP1 ? WpfColor.FromRgb(255, 184, 100) : WpfColor.FromRgb(88, 166, 255);
 
-        var eventTypeLabel = item.Type switch
-        {
-            "permission_required" or "input_required" => "ACTION",
-            "failed" => "FAIL",
-            _ => "DONE"
-        };
+        var eventTypeLabel = EventPresentation.Label(item);
 
         var cardBg = isUnread
             ? new SolidColorBrush(WpfColor.FromRgb(33, 37, 47))
@@ -338,7 +377,7 @@ public sealed class CenterWindow : Window
             CornerRadius = new CornerRadius(4),
             Padding = new Thickness(10, 9, 10, 9),
             Margin = new Thickness(0, 0, 0, 6),
-            Cursor = WpfCursor.Hand,
+            Cursor = WpfCursor.Arrow,
         };
 
         cardBorder.MouseEnter += (_, _) => { if (!isUnread) cardBorder.Background = new SolidColorBrush(WpfColor.FromRgb(36, 40, 50)); };
@@ -353,10 +392,12 @@ public sealed class CenterWindow : Window
         var typeBadge = new TextBlock
         {
             Text = eventTypeLabel,
+            TextWrapping = TextWrapping.Wrap,
+            MaxWidth = 280,
             Foreground = new SolidColorBrush(priorityColor),
-            FontSize = 9, FontWeight = FontWeights.Bold,
+            FontSize = 10, FontWeight = FontWeights.Bold,
             VerticalAlignment = VerticalAlignment.Center,
-            Opacity = 0.85,
+            Opacity = 1.0,
         };
         var badgeRow = new StackPanel { Orientation = WpfOrientation.Horizontal, Children = { dot, typeBadge } };
 
@@ -364,7 +405,7 @@ public sealed class CenterWindow : Window
         var nameLabel = new TextBlock
         {
             Text = agentName,
-            Foreground = new SolidColorBrush(isUnread ? WpfColor.FromRgb(180, 185, 195) : WpfColor.FromRgb(120, 125, 135)),
+            Foreground = new SolidColorBrush(isUnread ? WpfColor.FromRgb(180, 185, 195) : WpfColor.FromRgb(165, 175, 190)),
             FontSize = 11,
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(10, 0, 0, 0),
@@ -372,33 +413,47 @@ public sealed class CenterWindow : Window
         var timeLabel = new TextBlock
         {
             Text = timeStr,
-            Foreground = new SolidColorBrush(isUnread ? WpfColor.FromRgb(100, 105, 115) : WpfColor.FromRgb(70, 75, 85)),
+            Foreground = new SolidColorBrush(isUnread ? WpfColor.FromRgb(165, 175, 190) : WpfColor.FromRgb(150, 160, 175)),
             FontSize = 10,
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(6, 0, 0, 0),
         };
-        var topRow = new StackPanel { Orientation = WpfOrientation.Horizontal, Children = { badgeRow, nameLabel, timeLabel } };
+        var readLabel = new TextBlock { Text = isUnread ? "Unread" : "Read",
+            Foreground = WpfBrushes.LightGray, Margin = new Thickness(8,0,0,0), FontSize = 10 };
+        var topRow = new WrapPanel { Children = { badgeRow, nameLabel, timeLabel, readLabel } };
 
         var message = new TextBlock
         {
             Text = item.Message,
-            Foreground = new SolidColorBrush(isUnread ? WpfColor.FromRgb(200, 203, 210) : WpfColor.FromRgb(130, 133, 140)),
+            Foreground = new SolidColorBrush(isUnread ? WpfColor.FromRgb(200, 203, 210) : WpfColor.FromRgb(180, 185, 195)),
             FontSize = 12,
             TextWrapping = TextWrapping.Wrap,
-            Opacity = isUnread ? 1.0 : 0.7,
+            Opacity = 1.0,
             Margin = new Thickness(0, 4, 0, 0),
         };
 
-        var infoPanel = new StackPanel { Children = { topRow, message } };
+        var details = new TextBlock
+        {
+            Text = EventPresentation.Details(item), TextWrapping = TextWrapping.Wrap,
+            Foreground = new SolidColorBrush(WpfColor.FromRgb(165, 175, 190)),
+            FontSize = 11, Margin = new Thickness(0, 6, 0, 0),
+        };
+        var title = new TextBlock
+        {
+            Text = item.Title, TextWrapping = TextWrapping.Wrap,
+            Foreground = WpfBrushes.White, FontWeight = FontWeights.SemiBold,
+            Margin = new Thickness(0, 5, 0, 0),
+        };
+        var infoPanel = new StackPanel { Children = { topRow, title, message, details } };
 
         var actionsPanel = new StackPanel { Orientation = WpfOrientation.Horizontal };
-        if (isUnread)
         {
             if (registry.Agents.FirstOrDefault(a => a.AgentId == item.AgentId)?.Target is AgentTarget target && target.Pid > 0)
             {
                 var jumpBtn = new WpfButton
                 {
                     Content = "Focus",
+                    Uid = "jump:" + item.Id,
                     Padding = new Thickness(8, 3, 8, 3),
                     FontSize = 10,
                     Margin = new Thickness(0, 0, 6, 0),
@@ -407,13 +462,22 @@ public sealed class CenterWindow : Window
                     BorderThickness = new Thickness(0),
                 };
                 var aid = item.AgentId;
-                jumpBtn.Click += (_, _) => _commands.Jump(aid);
+                AutomationProperties.SetName(jumpBtn, "Return to " + agentName + " session");
+                jumpBtn.ToolTip = "Ask Windows to focus the registered Agent window. This does not mark the event read.";
+                jumpBtn.Click += async (_, _) => await RunActionAsync(jumpBtn, "Requesting window focus…", () => _commands.JumpAsync(aid));
                 actionsPanel.Children.Add(jumpBtn);
             }
 
+            if (registry.Agents.FirstOrDefault(a => a.AgentId == item.AgentId)?.Target is not AgentTarget knownTarget || knownTarget.Pid <= 0)
+                actionsPanel.Children.Add(new TextBlock { Text = "Window target unavailable", Foreground = WpfBrushes.LightGray,
+                    FontSize = 11, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0,0,10,0) });
+
+            if (isUnread)
+            {
             var readBtn = new WpfButton
             {
                 Content = "Mark read",
+                Uid = "read:" + item.Id,
                 Padding = new Thickness(8, 3, 8, 3),
                 FontSize = 10,
                 Background = new SolidColorBrush(WpfColor.FromRgb(45, 50, 60)),
@@ -421,20 +485,81 @@ public sealed class CenterWindow : Window
                 BorderThickness = new Thickness(0),
             };
             var eventId = item.Id;
-            readBtn.Click += (_, _) => _commands.MarkRead(eventId);
+            AutomationProperties.SetName(readBtn, "Mark notification read: " + item.Title);
+            readBtn.ToolTip = "Mark this notification read; this does not complete or resolve the task.";
+            readBtn.Click += async (_, _) => await RunActionAsync(readBtn, "Saving read state…", () => _commands.MarkReadAsync(eventId));
             actionsPanel.Children.Add(readBtn);
+            }
         }
 
         var cardGrid = new Grid();
-        cardGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        cardGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        Grid.SetColumn(infoPanel, 0);
-        Grid.SetColumn(actionsPanel, 1);
+        cardGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        cardGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        actionsPanel.Margin = new Thickness(0, 8, 0, 0);
+        Grid.SetRow(infoPanel, 0);
+        Grid.SetRow(actionsPanel, 1);
         cardGrid.Children.Add(infoPanel);
         cardGrid.Children.Add(actionsPanel);
 
         cardBorder.Child = cardGrid;
         return cardBorder;
+    }
+
+    private static void ConfigureMarkAllButton(WpfButton button)
+    {
+        button.Content = "Mark all read";
+        button.Padding = new Thickness(10, 6, 10, 6);
+        button.Background = new SolidColorBrush(WpfColor.FromRgb(58, 110, 165));
+        button.Foreground = WpfBrushes.White;
+        button.BorderThickness = new Thickness(0);
+        button.FontSize = 12;
+    }
+
+    private void ShowOutcome(CommandOutcome outcome)
+    {
+        if (_dataUnavailable) return;
+        _status.Text = outcome.Message;
+        _status.Foreground = outcome.Ok == true ? WpfBrushes.LightGreen : WpfBrushes.Orange;
+        AnnounceStatus();
+    }
+
+    private async Task RunActionAsync(WpfButton button, string pending, Func<Task<CommandOutcome>> action)
+    {
+        if (_pendingCommands > 0 || _dataUnavailable) return;
+        _pendingCommands++;
+        var label = button.Content;
+        button.IsEnabled = false;
+        button.Content = "Working…";
+        _markAllButton.IsEnabled = false;
+        _eventList.IsEnabled = false;
+        _status.Text = pending;
+        _status.Foreground = WpfBrushes.LightGray;
+        AnnounceStatus();
+        try { ShowOutcome(await action()); }
+        finally
+        {
+            _pendingCommands--;
+            button.Content = label;
+            button.IsEnabled = true;
+            Refresh();
+        }
+    }
+
+    private void AnnounceStatus()
+    {
+        var peer = UIElementAutomationPeer.FromElement(_status) ?? new TextBlockAutomationPeer(_status);
+        peer.RaiseAutomationEvent(AutomationEvents.LiveRegionChanged);
+    }
+
+    private static FrameworkElement? FindFocusable(DependencyObject root, string uid)
+    {
+        if (root is FrameworkElement element && element.Uid == uid && element.Focusable) return element;
+        for (var index = 0; index < VisualTreeHelper.GetChildrenCount(root); index++)
+        {
+            var match = FindFocusable(VisualTreeHelper.GetChild(root, index), uid);
+            if (match != null) return match;
+        }
+        return null;
     }
 
     private static string FormatAge(long timestampMs)

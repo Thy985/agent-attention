@@ -1,3 +1,7 @@
+// Linux deliberately opts into the headless TCP adapter; no desktop session is assumed.
+const previousAttentionMode = process.env.AGENT_ATTENTION_MODE;
+beforeAll(() => { if (process.platform !== 'win32') process.env.AGENT_ATTENTION_MODE = 'headless'; });
+afterAll(() => { if (previousAttentionMode === undefined) delete process.env.AGENT_ATTENTION_MODE; else process.env.AGENT_ATTENTION_MODE = previousAttentionMode; });
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';

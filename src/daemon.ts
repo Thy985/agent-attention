@@ -1,3 +1,6 @@
+import { withFileLock } from './state/file-lock';
+import { getPlatformCapabilities } from './platform';
+import { resolveStateDir, resolveNativeWatchPath } from './paths';
 import * as chokidar from 'chokidar';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
@@ -18,6 +21,7 @@ export interface DaemonOptions {
   cliPath: string;         // absolute path to daemon-cli.js (for tray double-click)
   uiExecutablePath: string; // native C# UI host
   debug?: boolean;
+  headless?: boolean;
 }
 
 export interface Daemon {
@@ -49,7 +53,7 @@ function atomicWriteFileSync(filePath: string, contents: string): void {
 const LOG_MAX_LINES = 10_000;
 let _logFile: fs.WriteStream | null = null;
 const LOG_PATH = path.join(
-  process.env.AGENT_ATTENTION_HOME || path.join(os.homedir(), '.agent-attention'),
+  resolveStateDir(),
   'daemon.log',
 );
 function getLogFile(): fs.WriteStream {
@@ -169,6 +173,7 @@ export function createDaemon(options: DaemonOptions): Daemon {
     // Without this, stop() deletes tray-state.json to signal the tray to
     // exit, and a late push silently recreates it → tray never exits.
     if (stopped) return;
+    if (options.headless) return;
     let state;
     try {
       state = readState(options.statePath);
@@ -252,7 +257,7 @@ export function createDaemon(options: DaemonOptions): Daemon {
   };
 
   // Watch state.json for changes
-  watcher = chokidar.watch(options.statePath, {
+  watcher = chokidar.watch(resolveNativeWatchPath(options.statePath), {
     persistent: true,
     awaitWriteFinish: { stabilityThreshold: 100, pollInterval: 50 },
     ignoreInitial: true,
@@ -261,7 +266,7 @@ export function createDaemon(options: DaemonOptions): Daemon {
   watcher.on('change', () => {
     log(`state.json changed`);
     debouncedReload();
-    emitNotification(stateDir, 'state-changed', { file: 'state', sha256: crypto.createHash('sha256').update(fs.readFileSync(options.statePath)).digest('hex') });
+    emitNotification(stateDir, 'state-changed', { file: 'state', sha256: (() => { try { return crypto.createHash('sha256').update(fs.readFileSync(options.statePath)).digest('hex'); } catch { return ''; } })() });
   });
 
   watcher.on('add', () => {
@@ -274,7 +279,7 @@ export function createDaemon(options: DaemonOptions): Daemon {
   });
 
   // Start IPC server for C# UI mode (real-time state push)
-  if (options.uiExecutablePath) {
+  if (options.uiExecutablePath || options.headless) {
     startPipeServer(stateDir);
     watchRegistryForNotifications(stateDir);
     // M6b: register IPC RPC command handlers
@@ -290,18 +295,18 @@ export function createDaemon(options: DaemonOptions): Daemon {
       return dispatchCommand("jump", args);
     });
   }
-  spawnTray();
+  if (!options.headless) spawnTray();
 
   // P4: Start Observer sidecar — watches agents continuously, writes observe.jsonl
   try {
-    observerStop = startObserver(stateDir);
+    if (!options.headless) observerStop = startObserver(stateDir);
   } catch (err) {
     log(`observer start failed (non-fatal): ${err}`);
   }
 
   // Push initial state immediately
   setTimeout(() => {
-    if (!stopped) { pushStateToTrayFile(); if (options.uiExecutablePath) { pushStateToClients(stateDir); } }
+    if (!stopped) { pushStateToTrayFile(); if (options.uiExecutablePath || options.headless) { pushStateToClients(stateDir); } }
   }, 500);
 
   // Periodic tray liveness check
@@ -332,9 +337,8 @@ export function createDaemon(options: DaemonOptions): Daemon {
       // By removing the file first, the tray detects the signal and runs
       // Invoke-Exit which sets Visible=$false, making Windows immediately
       // reclaim the shell icon handle.
-      try { fs.unlinkSync(options.trayStatePath); } catch {}
+      if (!options.headless) { try { fs.unlinkSync(options.trayStatePath); } catch {} clearTrayPid(options.trayPidPath); }
       stopPipeServer();
-      clearTrayPid(options.trayPidPath);
 
       if (trayProc) {
         const pid = trayProc.pid!;
@@ -362,7 +366,7 @@ export function createDaemon(options: DaemonOptions): Daemon {
         trayProc = null;
         try { process.kill(pid, 'SIGTERM'); } catch {}
       }
-      try { clearTrayPid(options.trayPidPath); } catch {}
+      if (!options.headless) { try { clearTrayPid(options.trayPidPath); } catch {} }
     },
   };
 }
@@ -370,8 +374,8 @@ export function createDaemon(options: DaemonOptions): Daemon {
 // ---------------------------------------------------------------------------
 // CLI entry point
 // ---------------------------------------------------------------------------
-if (require.main === module) {
-  const home    = process.env.AGENT_ATTENTION_HOME || path.join(os.homedir(), '.agent-attention');
+export function runDaemon(): void {
+  const home    = resolveStateDir();
   const stateDir = home; // AGENT_ATTENTION_HOME IS the .agent-attention dir (see logging.ts)
   const statePath    = path.join(stateDir, 'state.json');
   const trayStatePath = path.join(stateDir, 'tray-state.json');
@@ -382,8 +386,11 @@ if (require.main === module) {
   // resolved to dist/dist/daemon-cli.js, which never exists.)
   const cliPath        = path.join(__dirname, 'daemon-cli.js');
 
-  const uiExecutablePath = resolveNativeUiPath();
-  if (!uiExecutablePath) {
+  const capabilities = getPlatformCapabilities();
+  const headless = capabilities.mode === 'headless';
+  if (!headless && process.platform !== 'win32') throw new Error('Select AGENT_ATTENTION_MODE=headless on Linux; desktop mode is unsupported');
+  const uiExecutablePath = headless ? '' : resolveNativeUiPath();
+  if (!headless && !uiExecutablePath) {
     console.error(
       'AgentAttention.UI.exe not found. Build it or set AGENT_ATTENTION_UI_EXE.'
     );
@@ -399,7 +406,7 @@ if (require.main === module) {
   // dead is treated as stale and stolen. This enforces daemon_instances=1
   // even under concurrent `daemon start` invocations.
   // -----------------------------------------------------------------------
-  const acquireDaemonLock = (): 'acquired' | 'stolen' | 'busy' => {
+  const acquireDaemonLock = (): 'acquired' | 'stolen' | 'busy' => withFileLock(daemonLockPath, () => {
     const writeLock = (): void => {
       const fd = fs.openSync(daemonLockPath, 'wx');
       fs.writeSync(fd, String(process.pid));
@@ -415,7 +422,14 @@ if (require.main === module) {
         const raw = fs.readFileSync(daemonLockPath, 'utf-8').trim();
         const pid = parseInt(raw, 10);
         if (!isNaN(pid) && pid > 0) {
-          try { process.kill(pid, 0); return 'busy'; } catch { /* dead → steal */ }
+          try {
+            process.kill(pid, 0);
+            const zombie = process.platform === 'linux' && fs.readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ').pop()!.startsWith('Z');
+            if (!zombie) return 'busy';
+          } catch (err: any) { if (err.code !== 'ESRCH' && err.code !== 'ENOENT') return 'busy'; }
+        } else {
+          return 'busy'; // malformed/unfinished lock is not safe to steal
+
         }
         // Stale or unreadable — steal atomically.
         fs.unlinkSync(daemonLockPath);
@@ -425,7 +439,7 @@ if (require.main === module) {
         return 'busy';
       }
     }
-  };
+  });
   const releaseDaemonLock = (): void => {
     try {
       if (fs.existsSync(daemonLockPath)) {
@@ -450,21 +464,26 @@ if (require.main === module) {
     daemonLog('stale daemon.lock stolen from dead holder', debug);
   }
 
+  if (headless) for (const name of ['ipc-port.txt', 'ipc-auth.secret']) { try { fs.unlinkSync(path.join(stateDir, name)); } catch {} }
+  fs.writeFileSync(path.join(stateDir, 'daemon.pid'), String(process.pid));
   const daemon = createDaemon({
     statePath,
     trayStatePath,
     trayPidPath,
     cliPath,
-    uiExecutablePath,
+    uiExecutablePath: uiExecutablePath || '',
+    headless,
     debug,
   });
 
   const shutdown = (code: number): void => {
     daemon.stop().then(() => {
       releaseDaemonLock();
+      try { fs.unlinkSync(path.join(stateDir, 'daemon.pid')); } catch {}
       process.exit(code);
     }).catch(() => {
       releaseDaemonLock();
+      try { fs.unlinkSync(path.join(stateDir, 'daemon.pid')); } catch {}
       process.exit(code);
     });
   };
@@ -480,19 +499,25 @@ if (require.main === module) {
       // crashed daemon as an orphaned ghost icon. File cleanup alone leaves
       // a window where the tray keeps polling a deleted state file.
       try { daemon.killTray(); } catch {}
-      fs.unlinkSync(trayPidPath);
-      fs.unlinkSync(trayStatePath);
+      if (!headless) {
+        try { fs.unlinkSync(trayPidPath); } catch {}
+        try { fs.unlinkSync(trayStatePath); } catch {}
+      }
     } catch {}
     releaseDaemonLock();
     process.exit(1);
   });
   process.on('beforeExit', () => {
-    try { fs.unlinkSync(trayPidPath); } catch {}
-    try { fs.unlinkSync(trayStatePath); } catch {}
+    if (!headless) {
+      try { fs.unlinkSync(trayPidPath); } catch {}
+      try { fs.unlinkSync(trayStatePath); } catch {}
+    }
     releaseDaemonLock();
     closeDaemonLog();
   });
 
   daemonLog(`started, watching ${statePath}`, debug);
-  daemonLog(`tray polling file: ${trayStatePath}`, debug)  // C# tray reads this
+  if (!headless) daemonLog(`tray polling file: ${trayStatePath}`, debug)  // C# tray reads this
 }
+
+if (require.main === module) runDaemon();

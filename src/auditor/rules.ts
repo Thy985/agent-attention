@@ -1,3 +1,4 @@
+import { resolveStateDir } from '../paths';
 /**
  * Attention Auditor — rules + data structures.
  *
@@ -59,8 +60,7 @@ function nextId(ruleId: string): string {
 }
 
 function stateDir(): string {
-  return process.env.AGENT_ATTENTION_HOME
-    ?? path.join(os.homedir(), '.agent-attention');
+  return resolveStateDir();
 }
 
 // ── FP-DUP-001: burst duplicates ────────────────────────────────────────────

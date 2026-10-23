@@ -1,3 +1,4 @@
+import { resolveStateDir } from './paths';
 /**
  * M7: Lightweight telemetry for the C# UI Host soak period.
  *
@@ -21,11 +22,7 @@ import * as path from 'path';
 import * as os from 'os';
 
 function getTelemetryPath(): string {
-  return path.join(
-    process.env.AGENT_ATTENTION_HOME || os.homedir(),
-    '.agent-attention',
-    'telemetry.json',
-  );
+  return path.join(resolveStateDir(), 'telemetry.json');
 }
 const TELEMETRY_PATH = getTelemetryPath();
 

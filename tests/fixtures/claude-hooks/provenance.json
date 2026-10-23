@@ -1,0 +1,19 @@
+{
+  "documentation_url": "https://code.claude.com/docs/en/hooks.md",
+  "retrieved_on": "2026-10-21",
+  "documentation_sha256": "5a5cc139bc639ced7c328a509c3962da375dfba672dc54713356940a354bd79f",
+  "sdk": "@anthropic-ai/claude-agent-sdk@0.3.306",
+  "sdk_tarball": "https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk/-/claude-agent-sdk-0.3.306.tgz",
+  "sdk_types_sha256": "54e4bcb7150c5ee8064c5a606120156946ef68b4fe8429334cdf9abe262d59b2",
+  "fixture_origin": "First verbatim JSON examples per event from official reference; placeholders are upstream examples, not live user captures. Types are official SDK excerpts; this is a pinned schema, not tested live CLI compatibility.",
+  "fixtures": [
+    "PermissionRequest",
+    "PostToolUse",
+    "Notification",
+    "TaskCompleted",
+    "Stop",
+    "StopFailure",
+    "SessionEnd",
+    "Elicitation"
+  ]
+}

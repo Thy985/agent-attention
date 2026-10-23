@@ -1,8 +1,9 @@
 #!/usr/bin/env node
+import { resolveStateDir } from './paths';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
-import { notify } from './notification/win32';
-import { shouldNotify, getDedupAgentId } from './dedup';
+import { deliver } from './platform';
+import { receiveEvent } from './core/receive';
 import { loadConfig } from './config';
 import { EventName, EVENT_PRIORITY } from './events';
 import { recordEvent } from './state';
@@ -13,7 +14,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-const STATE_DIR = process.env.AGENT_ATTENTION_HOME || path.join(os.homedir(), '.agent-attention');
+const STATE_DIR = resolveStateDir();
 const STATE_PATH = path.join(STATE_DIR, 'state.json');
 
 /**
@@ -45,6 +46,12 @@ function extractArgs(argv: string[]): { event: string; message: string } {
 }
 
 async function main(): Promise<void> {
+  if (process.argv.length === 3 && ['--help', '-h'].includes(process.argv[2])) {
+    console.log('Usage: agent-notify <event> <message>');
+    console.log('Events: completed | permission_required | input_required | failed');
+    console.log('Records an explicit task report. Desktop delivery depends on platform capability.');
+    return;
+  }
   const { event: eventName, message } = extractArgs(hideBin(process.argv));
   const correlationId = generateCorrelationId();
 
@@ -91,14 +98,14 @@ async function main(): Promise<void> {
   }
 
   // Dedup check (best-effort) — AC-07: key includes agent+event+message
-  // Use machine-wide dedup id (hostname only) so dedup works across processes
-  // even when each process has a unique registration id (hostname-pid).
-  const dedupEnabled = shouldNotify(getDedupAgentId(), eventName, message);
-  if (!dedupEnabled) {
-    log({ component: 'cli', level: 'INFO', event: 'gated', message: `notification suppressed: dedup`, correlation_id: correlationId, context: { event: eventName, reason: 'dedup' } });
-    process.exit(0);
-  }
-
+  const sessionId = process.env.AGENT_ATTENTION_SESSION_ID || undefined;
+  const taskId = process.env.AGENT_ATTENTION_TASK_ID || undefined;
+  const sourceEventId = process.env.AGENT_ATTENTION_EVENT_ID || undefined;
+  const processExit = process.env.AGENT_ATTENTION_PROCESS_EXIT;
+  const evidence = processExit
+    ? { contract: 'process-exit/v1', mechanism: 'wrapper' as const, basis: 'process_observation' as const, scope: 'process' as const }
+    : { contract: 'manual-cli/v1', mechanism: 'cli' as const, basis: 'explicit_report' as const, scope: 'task' as const };
+  let duplicate = false;
   // P0 fix: state must be written BEFORE notify so a state-write failure
   // never produces an orphaned toast. Notification is best-effort: if the
   // toast fails the event is still recorded in state.json.
@@ -111,7 +118,7 @@ async function main(): Promise<void> {
     // AC-06: compliance tracking — log whether this notification follows the protocol
     const compliant = checkCompliance(agentId, eventName);
     log({ component: 'cli', level: compliant ? 'INFO' : 'WARN', event: 'compliance_check', message: `${agentName} notification ${eventName} is ${compliant ? 'valid' : 'unexpected'}`, correlation_id: correlationId, context: { agent_id: agentId, event: eventName, priority, compliant } });
-    recordEvent(STATE_PATH, {
+    const receipt = receiveEvent(STATE_PATH, {
       type: eventName as EventName,
       priority,
       agent_id: agentId,
@@ -120,15 +127,24 @@ async function main(): Promise<void> {
       message,
       timestamp: Date.now(),
       correlation_id: correlationId,
-    });
+      session_id: sessionId, task_id: taskId, source_event_id: sourceEventId,
+      source_event: processExit ? `process_exit(${processExit})` : 'manual_report', evidence,
+    }, 30_000);
+    duplicate = receipt.duplicate;
   } catch (stateErr) {
     console.error(`State write failed: ${stateErr instanceof Error ? stateErr.message : String(stateErr)}`);
     process.exit(1);
   }
 
+  if (duplicate) {
+    console.log(JSON.stringify({ recorded: true, delivery: 'suppressed', reason: 'retained-event-dedup' }));
+    return;
+  }
+
   try {
-    await notify(eventName as EventName, message, config.sound?.enabled ?? true);
-    log({ component: 'cli', level: 'INFO', event: 'exit_success', message: 'notification complete' });
+    const delivery = await deliver(eventName as EventName, message, config.sound?.enabled ?? true);
+    console.log(JSON.stringify({ recorded: true, delivery: delivery.status, reason: delivery.reason }));
+    log({ component: 'cli', level: 'INFO', event: 'exit_success', message: 'event recorded; platform delivery result reported' });
     process.exit(0);
   } catch (err) {
     log({ component: 'cli', level: 'WARN', event: 'notify_failed', message: `notification failed: ${err instanceof Error ? err.message : String(err)}`, correlation_id: correlationId });

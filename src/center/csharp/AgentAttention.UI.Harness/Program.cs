@@ -1,313 +1,223 @@
 using System.IO;
 using System.Text.Json;
 using System.Windows;
+using System.Windows.Automation.Peers;
+using System.Windows.Automation.Provider;
+using System.Windows.Controls;
+using System.Windows.Media;
 using System.Windows.Threading;
 using AgentAttention.UI;
 
+// Interactive Windows runner only. Fake CLI tests UI feedback/wiring, never real focus or Toast delivery.
 internal static class Program
 {
-    private static int _passed;
-    private static int _failed;
-
+    private static int _passed, _failed;
+    private static long _timestamp = DateTimeOffset.Now.ToUnixTimeMilliseconds();
     [STAThread]
     internal static int Main()
     {
-        var application=new Application{ShutdownMode=ShutdownMode.OnExplicitShutdown};
-        var root=Directory.CreateTempSubdirectory("agent-attention-ui-harness-").FullName;
+        var application = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
+        var root = Directory.CreateTempSubdirectory("agent-attention-ui-harness-").FullName;
         try
         {
-            ZeroUnread(root);
-            OneUnread(root);
-            TwoUnreadAndMarkAll(root);
-            ThreeAgentsAndEventTypes(root);
-            PerAgentLimit(root);
-            MarkEventAndJump(root);
+            BasicDisplay(root);
+            MarkAllKeepsFeedbackVisible(root);
+            EventOrderingAndLimit(root);
+            ReadAndFocusAreDifferent(root);
+            UnchangedRefreshKeepsControl(root);
+            UnavailableDataDoesNotLookEmpty(root);
             CloseHidesWhileHostRemains(root);
+            TrayDegradationAndMenuOwnership(root);
         }
-        catch(Exception exception)
-        {
-            Fail("harness completed without exception",exception.ToString());
-        }
+        catch (Exception exception) { Fail("harness completed without exception", exception.ToString()); }
         finally
         {
             application.Shutdown();
-            try{Directory.Delete(root,true);}catch(IOException){}
+            try { Directory.Delete(root, true); } catch (IOException) { }
         }
-
-        Console.WriteLine($"M1 interaction harness: passed={_passed} failed={_failed}");
-        return _failed==0?0:1;
+        Console.WriteLine($"Windows UI interaction harness: passed={_passed} failed={_failed}. Fake CLI; no real desktop focus/Toast acceptance.");
+        return _failed == 0 ? 0 : 1;
     }
 
-    private static void ZeroUnread(string root)
+    private static void BasicDisplay(string root)
     {
-        var scenario=CreateScenario(Path.Combine(root,"zero-unread"),new[]
-        {
-            Event("read-1","codex","completed",true),
+        var scenario = CreateScenario(Path.Combine(root,"display"),new[] {
+            Event("permission","codex","permission_required",false),
+            Event("complete","claude","completed",true),
+        },new[] { Agent("codex"),Agent("claude") });
+        Assert(scenario.Window.Title.EndsWith("(1)"),"unread count in window title");
+        Assert(HasText(scenario.Window,"PERMISSION REQUESTED"),"permission is not generic ACTION");
+        Assert(HasText(scenario.Window,"COMPLETION REPORTED — SCOPE UNKNOWN"),"legacy completion scope is explicit");
+        Assert(HasText(scenario.Window,"completed: complete"),"event title displayed");
+        Assert(HasText(scenario.Window,"Read") && HasText(scenario.Window,"Unread"),"read state visible without colour alone");
+        Assert(Controls(scenario.Window).OfType<Button>().Any(b=>b.Focusable && b.Uid=="agent:codex"),"agent filter is a focusable button");
+    }
+
+    private static void MarkAllKeepsFeedbackVisible(string root)
+    {
+        var scenario = CreateScenario(Path.Combine(root,"mark-all"),new[] {
+            Event("one","codex","input_required",false),Event("two","claude","completed",false),
         });
-        scenario.Window.Refresh();
-        AssertEqual(0,scenario.Window.UnreadCount,"zero unread/title");
-        AssertEqual("Codex (0 unread)",scenario.Window.VisibleGroupHeaders.Single(),"zero unread/group");
-        AssertEqual(1,scenario.Window.VisibleEventIds.Count,"zero unread/event retained");
+        Assert(Invoke(scenario.Window,"Mark all read"),"mark all via AutomationPeer");
+        WaitFor(()=>HasText(scenario.Window,"Read state saved."),"mark-all result feedback");
+        Assert(scenario.Window.IsVisible,"mark-all does not hide the outcome");
+        Assert(ReadState(scenario.StatePath).GetProperty("unreadCount").GetInt32()==0,"read update persisted");
+        Assert(HasText(scenario.Window,"No unread notifications"),"count refreshed after acknowledgement");
     }
 
-    private static void OneUnread(string root)
+    private static void EventOrderingAndLimit(string root)
     {
-        var scenario=CreateScenario(Path.Combine(root,"one-unread"),new[]
-        {
-            Event("unread-1","codex","input_required",false),
-            Event("read-1","claude","completed",true),
-        },agents:new[]{Agent("codex"),Agent("claude")});
-        scenario.Window.Refresh();
-        AssertEqual(1,scenario.Window.UnreadCount,"one unread/count");
-        AssertSequence(new[]{"Codex (1 unread)","Claude (0 unread)"},scenario.Window.VisibleGroupHeaders,"one unread/groups");
+        var ordered = CreateScenario(Path.Combine(root,"ordering"),new[] {
+            Event("ordinary","codex","failed",false),Event("request","claude","input_required",false),
+            Event("read","codex","completed",true),
+        });
+        Assert(string.Join(',',ordered.Window.VisibleEventIds)=="request,ordinary,read","unread request before other events; read last");
+        var limited = CreateScenario(Path.Combine(root,"limit"),Enumerable.Range(1,25)
+            .Select(i=>Event($"e{i:00}","codex","completed",false)).ToArray());
+        Assert(limited.Window.VisibleEventIds.Count==20,"current UI cap is 20, not obsolete per-agent eight");
     }
 
-    private static void TwoUnreadAndMarkAll(string root)
+    private static void ReadAndFocusAreDifferent(string root)
     {
-        var scenario=CreateScenario(Path.Combine(root,"two-unread-mark-all"),new[]
-        {
-            Event("mark-all-2","codex","permission_required",false),
-            Event("mark-all-1","claude","completed",false),
-        },agents:new[]{Agent("codex"),Agent("claude")});
-        scenario.Window.Refresh();
-        AssertEqual(2,scenario.Window.UnreadCount,"mark-all initial");
-        scenario.Window.ShowAndActivate();
-        AssertTrue(scenario.Window.InvokeContentButton("Mark all read"),"mark-all AutomationPeer invoke");
-        WaitFor(()=>!scenario.Window.IsVisible,"mark-all hides Center");
-        AssertFalse(scenario.Window.IsVisible,"mark-all closes/hides Center");
-
-        WaitFor(()=>StateUnreadCount(scenario.StatePath)==0,"mark-all state update");
-        scenario.Window.Refresh();
-        AssertEqual(0,scenario.Window.UnreadCount,"mark-all refreshed count");
-        AssertContains("\"mark-all-read\"",File.ReadAllText(scenario.CommandLog),"mark-all CLI invocation");
+        var scenario = CreateScenario(Path.Combine(root,"commands"),new[] { Event("event","codex","failed",false) },new[] { Agent("codex",1234) });
+        Assert(Invoke(scenario.Window,"Focus"),"Focus via AutomationPeer");
+        WaitFor(()=>HasText(scenario.Window,"Window focus confirmed."),"fake CLI success reaches UI");
+        Assert(!ReadState(scenario.StatePath).GetProperty("events")[0].GetProperty("read").GetBoolean(),"Focus alone does not mark read");
+        Assert(Invoke(scenario.Window,"Mark read"),"Mark read via AutomationPeer");
+        WaitFor(()=>HasText(scenario.Window,"Read state saved."),"read action reaches final feedback");
+        Assert(Controls(scenario.Window).OfType<Button>().Any(b=>Equals(b.Content,"Focus")),"read event retains return-to-window action");
+        Assert(File.ReadAllLines(scenario.CommandLog).Length==2,"one CLI operation per UI action");
     }
 
-    private static void ThreeAgentsAndEventTypes(string root)
+    private static void UnchangedRefreshKeepsControl(string root)
     {
-        var scenario=CreateScenario(Path.Combine(root,"three-agents"),new[]
-        {
-            Event("evt-permission","codex","permission_required",false,"Codex"),
-            Event("evt-input","claude","input_required",false,"Claude"),
-            Event("evt-failed","gemini","failed",false,"Gemini"),
-            Event("evt-complete","codex","completed",true,"Codex"),
-        },agents:new[]{Agent("codex"),Agent("claude"),Agent("gemini")});
+        var scenario = CreateScenario(Path.Combine(root,"refresh"),new[] { Event("keep","codex","failed",false) });
+        var button = Controls(scenario.Window).OfType<Button>().First(b=>Equals(b.Content,"Mark read"));
         scenario.Window.Refresh();
-
-        AssertEqual(3,scenario.Window.UnreadCount,"three agents/unread");
-        AssertSequence(new[]{"Codex (1 unread)","Claude (1 unread)","Gemini (1 unread)"},scenario.Window.VisibleGroupHeaders,"three agents/groups");
-        AssertSequence(new[]{"evt-permission","evt-complete","evt-input","evt-failed"},scenario.Window.VisibleEventIds,"three agents/order");
+        Assert(Controls(scenario.Window).OfType<Button>().Any(b=>ReferenceEquals(b,button)),"unchanged poll keeps existing button instance");
     }
 
-    private static void PerAgentLimit(string root)
+    private static void UnavailableDataDoesNotLookEmpty(string root)
     {
-        var events=Enumerable.Range(1,10).Select(index=>Event($"cap-{index:00}","codex","completed",index>8)).ToList();
-        var scenario=CreateScenario(Path.Combine(root,"per-agent-limit"),events);
+        var scenario = CreateScenario(Path.Combine(root,"corrupt"),new[] { Event("keep","codex","failed",false) });
+        File.WriteAllText(scenario.StatePath,"invalid");
         scenario.Window.Refresh();
-        AssertEqual(8,scenario.Window.VisibleEventIds.Count,"agent limit/visible");
-        AssertEqual("cap-01",scenario.Window.VisibleEventIds.First(),"agent limit/newest first");
-        AssertEqual("cap-08",scenario.Window.VisibleEventIds.Last(),"agent limit/cutoff");
-    }
-
-    private static void MarkEventAndJump(string root)
-    {
-        var scenario=CreateScenario(Path.Combine(root,"commands"),new[]
-        {
-            Event("command-read","codex","failed",false),
-        },agents:new[]{Agent("codex",targetPid:1234)});
-        scenario.Window.Refresh();
-        scenario.Window.ShowAndActivate();
-
-        AssertTrue(scenario.Window.InvokeContentButton("Focus"),"Focus AutomationPeer invoke");
-        AssertTrue(scenario.Window.InvokeContentButton("Mark read"),"Mark read AutomationPeer invoke");
-        WaitFor(()=>File.ReadAllText(scenario.CommandLog).Contains("\"jump\""),"jump CLI invocation");
-        WaitFor(()=>File.ReadAllText(scenario.CommandLog).Contains("\"mark-event\""),"mark-event CLI invocation");
-        WaitFor(()=>EventIsRead(scenario.StatePath,"command-read"),"mark-event state update");
+        Assert(HasText(scenario.Window,"Current data unavailable"),"invalid data not All caught up");
+        Assert(scenario.Window.VisibleEventIds.Contains("keep"),"last available cards preserved");
+        Assert(!Controls(scenario.Window).OfType<Button>().First(b=>Equals(b.Content,"Mark all read")).IsEnabled,"unavailable data disables write actions");
     }
 
     private static void CloseHidesWhileHostRemains(string root)
     {
-        var scenario=CreateScenario(Path.Combine(root,"close-hide"),Array.Empty<StateFixture>());
-        scenario.Window.Refresh();
-        scenario.Window.ShowAndActivate();
-        AssertTrue(scenario.Window.IsVisible,"close/window shown");
-        scenario.Window.Close();
-        AssertFalse(scenario.Window.IsVisible,"close/window hidden");
+        var scenario=CreateScenario(Path.Combine(root,"close"),Array.Empty<StateFixture>());
+        scenario.Window.Close(); Pump(100);
+        Assert(!scenario.Window.IsVisible,"closing Center hides it without stopping host");
     }
 
-    private static Scenario CreateScenario(
-        string directory,
-        IEnumerable<StateFixture> events,
-        AgentFixture[]? agents=null)
+    private static void TrayDegradationAndMenuOwnership(string root)
+    {
+        // Real WinForms menus and production TrayController on a Windows runner.
+        // IsDisposed is a deterministic lifetime assertion, not a GDI handle-count claim.
+        var directory = Path.Combine(root, "tray"); Directory.CreateDirectory(directory);
+        var state = Path.Combine(directory, "tray-state.json");
+        void Write(int i) => File.WriteAllText(state, JsonSerializer.Serialize(new {
+            version = 1, events = new[] { new { id = $"e{i}", read = false, title = $"event-{i}" } }
+        }));
+        Write(0);
+        var options = UiOptions.Parse(new[] { "-StatePath", state, "-RegistryPath", Path.Combine(directory,"agents.json"), "-TrayStatePath", state });
+        var controller = new TrayController(new StateStore(options), new CommandRunner(null, new CliCommandRunner("")), state, state);
+        var icon = (System.Windows.Forms.NotifyIcon) typeof(TrayController)
+            .GetField("_notifyIcon", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.GetValue(controller)!;
+        System.Windows.Forms.ContextMenuStrip? finalMenu = null;
+        try
+        {
+            controller.Refresh();
+            var menus = new List<System.Windows.Forms.ContextMenuStrip> { icon.ContextMenuStrip! };
+            for (int i = 1; i <= 50; i++)
+            {
+                Write(i); controller.Refresh();
+                Assert(menus[^1].IsDisposed, $"real tray refresh {i} disposes previous ContextMenuStrip");
+                menus.Add(icon.ContextMenuStrip!);
+            }
+            File.WriteAllText(state, "broken"); controller.Refresh();
+            Assert(icon.Text.Contains("stale"), "tray tooltip reports stale data instead of no unread");
+            Assert(icon.ContextMenuStrip!.Items.Cast<System.Windows.Forms.ToolStripItem>()
+                .Where(i=>i.Text?.StartsWith("Mark ")==true).All(i=>!i.Enabled), "stale tray disables read actions");
+            Assert(icon.ContextMenuStrip.Items[0].Enabled, "Open Center remains available during data error");
+            Write(51); controller.Refresh();
+            Assert(!icon.Text.Contains("stale") && icon.ContextMenuStrip!.Items.Cast<System.Windows.Forms.ToolStripItem>()
+                .Any(i=>i.Text?.StartsWith("Mark read")==true && i.Enabled), "tray recovers on valid refresh");
+            finalMenu = icon.ContextMenuStrip;
+        }
+        finally { controller.Dispose(); }
+        Assert(finalMenu?.IsDisposed==true, "tray disposal disposes last real menu");
+    }
+
+    private static Scenario CreateScenario(string directory,StateFixture[] events,AgentFixture[]? agents=null)
     {
         Directory.CreateDirectory(directory);
-        agents??=new[]{Agent("codex")};
-        var state=new
-        {
-            version=1,
-            updatedAt=DateTimeOffset.Now.ToUnixTimeMilliseconds(),
-            unreadCount=events.Count(item=>!item.read),
-            visible=events.Any(item=>!item.read),
-            events,
-        };
-        var registry=new{agents};
+        agents??=new[] {Agent("codex")};
         var statePath=Path.Combine(directory,"state.json");
         var registryPath=Path.Combine(directory,"agents.json");
         var commandLog=Path.Combine(directory,"cli-calls.log");
-        File.WriteAllText(statePath,JsonSerializer.Serialize(state,new JsonSerializerOptions{WriteIndented=true}));
-        File.WriteAllText(registryPath,JsonSerializer.Serialize(registry));
+        File.WriteAllText(statePath,JsonSerializer.Serialize(new {version=1,updatedAt=DateTimeOffset.Now.ToUnixTimeMilliseconds(),unreadCount=events.Count(e=>!e.read),visible=events.Any(e=>!e.read),events}));
+        File.WriteAllText(registryPath,JsonSerializer.Serialize(new {agents}));
         File.WriteAllText(commandLog,string.Empty);
-        File.WriteAllText(Path.Combine(directory,"fake-cli.js"),
-            """
+        var cliPath=Path.Combine(directory,"fake-cli.js");
+        File.WriteAllText(cliPath,"""
             const fs = require('fs');
             const path = require('path');
-            const [command, argument] = process.argv.slice(2);
-            const statePath = path.join(__dirname, 'state.json');
-            const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
-            if (command === 'mark-all-read') {
-              state.events.forEach(event => { event.read = true; });
-              state.unreadCount = 0;
-              state.visible = false;
-            } else if (command === 'mark-event') {
-              const event = state.events.find(item => item.id === argument);
-              if (event && !event.read) { state.unreadCount--; event.read = true; }
-              state.visible = state.unreadCount > 0;
-            }
-            fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
+            const [command, id] = process.argv.slice(2);
+            const p = path.join(__dirname, 'state.json');
+            const state = JSON.parse(fs.readFileSync(p, 'utf8'));
+            if (command === 'mark-all-read') state.events.forEach(e => e.read = true);
+            if (command === 'mark-event') { const e = state.events.find(e => e.id === id); if (e) e.read = true; }
+            state.unreadCount = state.events.filter(e => !e.read).length;
+            fs.writeFileSync(p, JSON.stringify(state));
             fs.appendFileSync(path.join(__dirname, 'cli-calls.log'), JSON.stringify(process.argv.slice(2)) + '\n');
             """);
-
-        var options=UiOptions.Parse(new[]
-        {
-            "-StatePath",statePath,
-            "-RegistryPath",registryPath,
-            "-CliPath",Path.Combine(directory,"fake-cli.js"),
-            "-TrayStatePath",statePath,
-        });
-        return new Scenario(
-            new CenterWindow(new StateStore(options),new CommandRunner(options.CliPath)),
-            statePath,
-            commandLog);
+        var options=UiOptions.Parse(new[] {"-StatePath",statePath,"-RegistryPath",registryPath,"-CliPath",cliPath,"-TrayStatePath",statePath});
+        var window=new CenterWindow(new StateStore(options),new CommandRunner(null,new CliCommandRunner(cliPath)));
+        window.Refresh(); window.ShowAndActivate(); window.UpdateLayout();
+        return new(window,statePath,commandLog);
     }
 
-    private static StateFixture Event(string id,string agentId,string type,bool read,string agentName="Codex")
+    private static IEnumerable<DependencyObject> Controls(DependencyObject root)
     {
-        return new StateFixture(
-            id,
-            DateTimeOffset.Now.ToUnixTimeMilliseconds(),
-            type,
-            type=="permission_required"||type=="input_required"?"P0":type=="failed"?"P1":"P2",
-            agentId,
-            agentName,
-            $"{type}: {id}",
-            $"{id} message",
-            read);
+        yield return root;
+        foreach(var child in LogicalTreeHelper.GetChildren(root).OfType<DependencyObject>())
+            foreach(var descendant in Controls(child)) yield return descendant;
     }
-
-    private static AgentFixture Agent(string id,int? targetPid=null)
+    private static bool HasText(Window window,string text)=>Controls(window).OfType<TextBlock>().Any(b=>b.Text==text);
+    private static bool Invoke(Window window,string content)
     {
-        var name=id.ToLowerInvariant() switch
-        {
-            "codex"=>"Codex",
-            "claude"=>"Claude",
-            "gemini"=>"Gemini",
-            _=>id,
-        };
-        return new AgentFixture(id,name,DateTimeOffset.Now.ToUnixTimeMilliseconds(),targetPid);
+        var button=Controls(window).OfType<Button>().FirstOrDefault(b=>Equals(b.Content,content));
+        if(button==null||!button.IsEnabled)return false;
+        var peer=new ButtonAutomationPeer(button);
+        if(peer.GetPattern(PatternInterface.Invoke) is not IInvokeProvider invoke)return false;
+        invoke.Invoke(); return true;
     }
-
-    private static int StateUnreadCount(string path)
+    private static JsonElement ReadState(string path)=>JsonSerializer.Deserialize<JsonElement>(File.ReadAllText(path));
+    private static void WaitFor(Func<bool> condition,string name)
     {
-        using var document=JsonDocument.Parse(File.ReadAllText(path));
-        return document.RootElement.GetProperty("unreadCount").GetInt32();
+        for(var i=0;i<60;i++) { try {if(condition()){_passed++;Console.WriteLine("PASS "+name);return;}} catch(IOException){} Pump(100); }
+        Fail(name,"timeout after 6 seconds");
     }
-
-    private static bool EventIsRead(string path,string id)
-    {
-        using var document=JsonDocument.Parse(File.ReadAllText(path));
-        foreach(var item in document.RootElement.GetProperty("events").EnumerateArray())
-        {
-            if(item.GetProperty("id").GetString()==id)return item.GetProperty("read").GetBoolean();
-        }
-
-        return false;
-    }
-
-    private static void WaitFor(Func<bool> condition,string description)
-    {
-        for(var attempt=0;attempt<50;attempt++)
-        {
-            try{if(condition())return;}catch(IOException){}
-            PumpDispatcher(100);
-        }
-
-        Fail(description,"condition was not met within 5 seconds");
-    }
-
-    private static void PumpDispatcher(int milliseconds)
+    private static void Pump(int milliseconds)
     {
         var deadline=Environment.TickCount64+milliseconds;
         while(Environment.TickCount64<deadline)
         {
             var frame=new DispatcherFrame();
             Dispatcher.CurrentDispatcher.BeginInvoke(DispatcherPriority.Background,new Action(()=>frame.Continue=false));
-            Dispatcher.PushFrame(frame);
-            Thread.Sleep(10);
+            Dispatcher.PushFrame(frame);Thread.Sleep(10);
         }
     }
-
-    private static void AssertTrue(bool condition,string name)=>AssertEqual(true,condition,name);
-    private static void AssertFalse(bool condition,string name)=>AssertEqual(false,condition,name);
-
-    private static void AssertEqual<T>(T expected,T actual,string name)
-    {
-        if(Equals(expected,actual))
-        {
-            _passed++;
-            Console.WriteLine($"PASS {name}");
-            return;
-        }
-
-        Fail(name,$"expected={expected} actual={actual}");
-    }
-
-    private static void AssertSequence(IReadOnlyList<string> expected,IReadOnlyList<string> actual,string name)
-    {
-        if(expected.SequenceEqual(actual,StringComparer.Ordinal))
-        {
-            _passed++;
-            Console.WriteLine($"PASS {name}");
-            return;
-        }
-
-        Fail(name,$"expected=[{string.Join(',',expected)}] actual=[{string.Join(',',actual)}]");
-    }
-
-    private static void AssertContains(string expected,string actual,string name)=>AssertTrue(actual.Contains(expected,StringComparison.Ordinal),name);
-
-    private static void Fail(string name,string detail)
-    {
-        _failed++;
-        Console.Error.WriteLine($"FAIL {name}: {detail}");
-    }
-
-    private sealed record StateFixture(
-        string id,long timestamp,string type,string priority,string agent_id,string agent_name,string title,string message,bool read);
-    private sealed class AgentFixture
-    {
-        public AgentFixture(string agentId,string name,long lastSeenAt,int? targetPid)
-        {
-            agent_id=agentId;
-            this.name=name;
-            this.last_seen_at=lastSeenAt;
-            target=targetPid.HasValue?new{type="terminal",pid=targetPid.Value}:null;
-        }
-
-        public string agent_id { get; }
-        public string name { get; }
-        public long last_seen_at { get; }
-        public object? target { get; }
-    }
-
+    private static void Assert(bool condition,string name) {if(condition){_passed++;Console.WriteLine("PASS "+name);}else Fail(name,"false");}
+    private static void Fail(string name,string detail){_failed++;Console.Error.WriteLine($"FAIL {name}: {detail}");}
+    private static StateFixture Event(string id,string agent,string type,bool read)=>new(id,Interlocked.Decrement(ref _timestamp),type,"P2",agent,agent,$"{type}: {id}","Example message",read);
+    private static AgentFixture Agent(string id,int? pid=null)=>new(id,id,DateTimeOffset.Now.ToUnixTimeMilliseconds(),pid.HasValue?new {type="terminal",pid=pid.Value}:null);
+    private sealed record StateFixture(string id,long timestamp,string type,string priority,string agent_id,string agent_name,string title,string message,bool read);
+    private sealed record AgentFixture(string agent_id,string name,long last_seen_at,object? target);
     private sealed record Scenario(CenterWindow Window,string StatePath,string CommandLog);
 }
-

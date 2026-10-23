@@ -54,8 +54,10 @@ describe('jumpToTarget', () => {
   it('is invoked from daemon-cli.ts (no longer dead code)', () => {
     const fs = require('fs');
     const src = fs.readFileSync('src/daemon-cli.ts', 'utf8');
-    // CLI must require ./jump and call jumpToTarget
-    expect(src).toMatch(/require\(['"]\.\/jump['"]\)/);
+    // CLI uses the platform boundary; the adapter retains the Windows implementation.
+    expect(src).toMatch(/require\(['"]\.\/platform['"]\)/);
+    const platform = fs.readFileSync('src/platform/index.ts', 'utf8');
+    expect(platform).toContain("require('../jump').jumpToTarget(target)");
     expect(src).toMatch(/jumpToTarget\(/);
   });
 });

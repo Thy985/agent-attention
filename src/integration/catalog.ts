@@ -145,20 +145,15 @@ function getIntegrationStatusMessage(
   const reliabilityLabel = reliability === CompletionReliability.Verified ? '✓' :
                            reliability === CompletionReliability.Probable ? '△' :
                            reliability === CompletionReliability.BestEffort ? '~' : '○';
-  return `${manifest.name}: ${levelNames[level]} ${reliabilityLabel}`;
+  return `${manifest.name}: ${levelNames[level]} completion=${reliability} ${reliabilityLabel} (${manifest.status ?? 'experimental'})`;
 }
 
 /**
  * Get the effective completion reliability for an agent.
  */
 export function getEffectiveReliability(manifest: IntegrationManifest): CompletionReliability {
-  const events = manifest.events;
-  const reliabilities = Object.values(events).filter((r): r is CompletionReliability => !!r);
-  if (reliabilities.length === 0) return CompletionReliability.Manual;
-  // Return the highest reliability
-  return reliabilities.reduce((max, r) =>
-    RELIABILITY_ORDER[r] > RELIABILITY_ORDER[max] ? r : max
-  , reliabilities[0]);
+  // Query completion specifically; a verified permission request proves no completion.
+  return manifest.events.completed ?? CompletionReliability.Manual;
 }
 
 /**

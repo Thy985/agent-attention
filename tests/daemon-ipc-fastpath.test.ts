@@ -1,3 +1,7 @@
+// Linux deliberately opts into the headless TCP adapter; no desktop session is assumed.
+const previousAttentionMode = process.env.AGENT_ATTENTION_MODE;
+beforeAll(() => { if (process.platform !== 'win32') process.env.AGENT_ATTENTION_MODE = 'headless'; });
+afterAll(() => { if (previousAttentionMode === undefined) delete process.env.AGENT_ATTENTION_MODE; else process.env.AGENT_ATTENTION_MODE = previousAttentionMode; });
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -58,17 +62,21 @@ describe("ipc fast path (M6a)", () => {
   }
 
   function drainSubscribe(client: net.Socket): Promise<void> {
-    return new Promise<void>((resolve) => {
-      let consumed = 0;
-      const handler = () => {
-        consumed++;
-        if (consumed >= 2) {
-          client.removeListener("data", handler);
-          resolve();
+    return new Promise<void>((resolve, reject) => {
+      let buffer = '';
+      const timer = setTimeout(() => { client.removeListener('data', handler); reject(new Error('Subscribe snapshot not received')); }, 2000);
+      const handler = (chunk: Buffer) => {
+        buffer += chunk.toString(); let newline: number;
+        while ((newline = buffer.indexOf('\n')) >= 0) {
+          const line = buffer.slice(0, newline); buffer = buffer.slice(newline + 1);
+          if (!line) continue;
+          if (JSON.parse(line).type === 'state') {
+            clearTimeout(timer); client.removeListener('data', handler); resolve(); return;
+          }
         }
       };
-      client.on("data", handler);
-      setTimeout(() => { client.removeListener("data", handler); resolve(); }, 2000);
+      client.on('data', handler);
+      client.write(JSON.stringify({ type: 'subscribe' }) + '\n');
     });
   }
 

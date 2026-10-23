@@ -1,3 +1,4 @@
+import { resolveStateDir } from './paths';
 /**
  * Claude Code hook handler.
  *
@@ -29,7 +30,7 @@ import { autoDetectAndRegister } from './registry';
 import { log, generateCorrelationId } from './logging';
 
 const STATE_PATH = path.join(
-  process.env.AGENT_ATTENTION_HOME || path.join(os.homedir(), '.agent-attention'),
+  resolveStateDir(),
   'state.json',
 );
 

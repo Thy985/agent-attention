@@ -117,12 +117,12 @@ describe('state corruption / write reliability regression', () => {
       expect(countTmpFiles()).toBe(0); // no leftover .tmp
     });
 
-    it('does not throw and leaves no tmp when contention never resolves', () => {
+    it('reports exhausted contention instead of silently claiming a dropped event was stored', () => {
       fs.renameSync.mockImplementation(() => {
         throw contentionError('EPERM');
       });
 
-      // Must NOT throw — best-effort infra never crashes the agent.
+      // The shared core must expose write failure; callers decide how to degrade safely.
       expect(() =>
         recordEvent(statePath, {
           type: 'completed',
@@ -133,7 +133,7 @@ describe('state corruption / write reliability regression', () => {
           agent_name: 'Claude',
           title: 'Claude: completed',
         }),
-      ).not.toThrow();
+      ).toThrow('Atomic state write failed after backoff retries');
 
       // State file must be absent or VALID JSON — never partial/garbage.
       if (fsReal().existsSync(statePath)) {

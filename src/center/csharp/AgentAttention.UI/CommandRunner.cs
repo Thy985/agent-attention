@@ -1,122 +1,108 @@
-using System;
 using System.Diagnostics;
-using System.Threading.Tasks;
 
 namespace AgentAttention.UI;
 
-/// <summary>
-/// M6b: Command runner that tries IPC RPC first, falls back to CLI spawn.
-/// </summary>
+public sealed record CommandOutcome(bool? Ok, string Message)
+{
+    public static CommandOutcome Success(string message) => new(true, message);
+    public static CommandOutcome Failure(string message) => new(false, message);
+    public static CommandOutcome Unknown() => new(null, "Outcome unknown — check the window or read state before trying again.");
+}
+
+/// <summary>Await acknowledgements; never repeat a possibly dispatched command as a CLI fallback.</summary>
 public sealed class CommandRunner
 {
-    private readonly IpcClient? _ipc;
-    private readonly Action _markAllReadCli;
-    private readonly Action<string> _markReadCli;
-    private readonly Action<string> _jumpCli;
+    private readonly Func<bool> _connected;
+    private readonly Func<string, string[], Task<PipeMessage?>> _send;
+    private readonly Func<string, string[], Task<CommandOutcome>> _cli;
+    public event Action<CommandOutcome>? Completed;
+    public bool IsConnected => _connected();
 
-    public CommandRunner(IpcClient? ipc, Action markAllReadCli, Action<string> markReadCli, Action<string> jumpCli)
-    {
-        _ipc=ipc;
-        _markAllReadCli=markAllReadCli;
-        _markReadCli=markReadCli;
-        _jumpCli=jumpCli;
-    }
+    public CommandRunner(IpcClient? ipc, CliCommandRunner cli)
+        : this(() => ipc?.IsConnected == true,
+            (command, args) => ipc!.SendCommand(command, args), cli.RunAsync) { }
 
-    public void MarkAllRead()
+    // Injectable transports allow production command policy to be exercised without WPF.
+    public CommandRunner(Func<bool> connected, Func<string, string[], Task<PipeMessage?>> send,
+        Func<string, string[], Task<CommandOutcome>> cli)
+    { _connected = connected; _send = send; _cli = cli; }
+
+    public void MarkAllRead() => _ = MarkAllReadAsync();
+    public void MarkRead(string eventId) => _ = MarkReadAsync(eventId);
+    public void Jump(string agentId) => _ = JumpAsync(agentId);
+    public Task<CommandOutcome> MarkAllReadAsync() => ExecuteAsync("mark-all-read");
+    public Task<CommandOutcome> MarkReadAsync(string id) => ExecuteAsync("mark-event", id);
+    public Task<CommandOutcome> JumpAsync(string id) => ExecuteAsync("jump", id);
+
+    private async Task<CommandOutcome> ExecuteAsync(string command, params string[] args)
     {
-        if(_ipc!=null&&_ipc.IsConnected)
+        CommandOutcome outcome;
+        try
         {
-            _=Task.Run(async()=>{
-                try
+            if (_connected())
+            {
+                var reply = await _send(command, args).ConfigureAwait(false);
+                outcome = reply?.Ok switch
                 {
-                    var result=await _ipc.SendCommand("mark-all-read");
-                    if(result!=null&&result.Ok==true)return;
-                }
-                catch{}
-                // Fallback to CLI
-                _markAllReadCli();
-            });
-            return;
+                    true => CommandOutcome.Success(command == "jump" ? "Window focus confirmed." : "Read state saved."),
+                    false => CommandOutcome.Failure(command == "jump"
+                        ? "Could not focus the window. The session may be closed or Windows may restrict focus."
+                        : "Read update failed. Refresh and try again."),
+                    _ => CommandOutcome.Unknown(),
+                };
+            }
+            else outcome = await _cli(command, args).ConfigureAwait(false);
         }
-        _markAllReadCli();
-    }
-
-    public void MarkRead(string eventId)
-    {
-        if(_ipc!=null&&_ipc.IsConnected)
-        {
-            _=Task.Run(async()=>{
-                try
-                {
-                    var result=await _ipc.SendCommand("mark-event",eventId);
-                    if(result!=null&&result.Ok==true)return;
-                }
-                catch{}
-                _markReadCli(eventId);
-            });
-            return;
-        }
-        _markReadCli(eventId);
-    }
-
-    public void Jump(string agentId)
-    {
-        if(_ipc!=null&&_ipc.IsConnected)
-        {
-            _=Task.Run(async()=>{
-                try
-                {
-                    var result=await _ipc.SendCommand("jump",agentId);
-                    if(result!=null&&result.Ok==true)return;
-                }
-                catch{}
-                _jumpCli(agentId);
-            });
-            return;
-        }
-        _jumpCli(agentId);
+        catch { outcome = CommandOutcome.Unknown(); }
+        // Notification feedback must not turn a completed command into an unhandled UI event exception.
+        try { Completed?.Invoke(outcome); } catch { }
+        return outcome;
     }
 }
 
-/// <summary>
-/// Legacy CLI-only command runner (used when no IPC is available).
-/// </summary>
 public sealed class CliCommandRunner
 {
     private readonly string _cliPath;
+    public CliCommandRunner(string cliPath) => _cliPath = cliPath;
 
-    public CliCommandRunner(string cliPath)
+    public async Task<CommandOutcome> RunAsync(string command, string[] args)
     {
-        _cliPath=cliPath;
-    }
-
-    public void MarkAllRead()=>StartCli("mark-all-read");
-    public void MarkRead(string eventId)=>StartCli("mark-event",eventId);
-    public void Jump(string agentId)=>StartCli("jump",agentId);
-
-    private void StartCli(string command,string? argument=null)
-    {
-        if(string.IsNullOrWhiteSpace(_cliPath))return;
-        var nodePath=Environment.GetEnvironmentVariable("AGENT_ATTENTION_NODE");
-        if(string.IsNullOrWhiteSpace(nodePath))nodePath="node";
-        var startInfo=new ProcessStartInfo
+        if (string.IsNullOrWhiteSpace(_cliPath)) return CommandOutcome.Failure("Command entry point is unavailable.");
+        var node = Environment.GetEnvironmentVariable("AGENT_ATTENTION_NODE");
+        var info = new ProcessStartInfo
         {
-            FileName=nodePath,
-            UseShellExecute=false,
-            CreateNoWindow=true,
-            WindowStyle=ProcessWindowStyle.Hidden,
+            FileName = string.IsNullOrWhiteSpace(node) ? "node" : node,
+            UseShellExecute = false, CreateNoWindow = true,
+            WindowStyle = ProcessWindowStyle.Hidden,
+            RedirectStandardOutput = true, RedirectStandardError = true,
         };
-        startInfo.ArgumentList.Add(_cliPath);
-        startInfo.ArgumentList.Add(command);
-        if(!string.IsNullOrWhiteSpace(argument))
-            startInfo.ArgumentList.Add(argument);
-        _=Task.Run(()=>{
+        info.ArgumentList.Add(_cliPath);
+        info.ArgumentList.Add(command);
+        foreach (var arg in args) info.ArgumentList.Add(arg);
+        Process? process;
+        try { process = Process.Start(info); }
+        catch { return CommandOutcome.Failure("Could not start the command. Check the Node and CLI installation."); }
+        if (process == null) return CommandOutcome.Failure("Could not start the command.");
+        using (process)
+        {
+            // Drain both pipes concurrently. Never expose raw command output (which may contain private data) in UI.
+            var output = process.StandardOutput.ReadToEndAsync();
+            var error = process.StandardError.ReadToEndAsync();
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(12));
             try
             {
-                using var process=Process.Start(startInfo);
-                process?.WaitForExit(10_000);
+                await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
+                await Task.WhenAll(output, error).WaitAsync(timeout.Token).ConfigureAwait(false);
             }
-            catch{}
-        });
+            catch (OperationCanceledException)
+            {
+                try { process.Kill(entireProcessTree: true); } catch { }
+                return CommandOutcome.Unknown(); // command may already have affected state/focus
+            }
+            return process.ExitCode == 0
+                ? CommandOutcome.Success(command == "jump" ? "Window focus confirmed." : "Read state saved.")
+                : CommandOutcome.Failure(command == "jump" ? "Could not focus the window. Check that the session is still open."
+                    : "Read update failed. Refresh and try again.");
+        }
     }
 }

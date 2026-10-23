@@ -1,0 +1,54 @@
+name: Verify candidates (no publishing)
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - run: npm install --global npm@10.9.4
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run verify:ci
+        env:
+          AGENT_ATTENTION_PACKAGE_REPORT: artifacts/ci/package.json
+          AGENT_ATTENTION_PACKAGE_OUT: artifacts/package
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-candidate-evidence
+          path: artifacts/
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - run: npm install --global npm@10.9.4
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run verify:ci -- --windows
+        env:
+          AGENT_ATTENTION_PACKAGE_REPORT: artifacts/ci/package.json
+          AGENT_ATTENTION_PACKAGE_OUT: artifacts/package
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-candidate-evidence-not-desktop-acceptance
+          path: artifacts/

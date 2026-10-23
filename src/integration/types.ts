@@ -14,7 +14,7 @@
  */
 
 /**
- * Integration Mechanisms — ordered by reliability (higher = more trustworthy)
+ * Legacy mechanism identifiers — numeric values are NOT reliability ranks
  */
 export enum IntegrationLevel {
   /** Manual: agent must explicitly call agent-notify */
@@ -45,7 +45,7 @@ export enum CompletionReliability {
   BestEffort = 'best_effort',
   /** Probable completion (wrapper detected clean exit) */
   Probable = 'probable',
-  /** Verified via structured event (hook with exitStatus) */
+  /** Validated structured signal within its stated scope; not independent outcome acceptance */
   Verified = 'verified',
 }
 
@@ -118,6 +118,8 @@ export interface IntegrationManifest {
   tags?: string[];
   /** Links to documentation */
   docs?: string[];
+  /** Versioned evidence contract, not a protocol-based assurance. */
+  evidenceContract?: string;
   /** Status: experimental | stable | deprecated */
   status?: 'experimental' | 'stable' | 'deprecated';
 }
@@ -156,7 +158,18 @@ export interface IntegrationResult {
 /**
  * Canonical Attention Event — the unified event type the runtime understands
  */
+export interface EventEvidence {
+  contract: string;
+  mechanism: IntegrationMechanism;
+  basis: 'structured_signal' | 'explicit_report' | 'process_observation';
+  scope: 'request' | 'turn' | 'task' | 'process';
+}
+
 export interface CanonicalAttentionEvent {
+  sessionId?: string;
+  taskId?: string;
+  sourceEventId?: string;
+  evidence?: EventEvidence;
   /** The canonical event type */
   event: AttentionEvent;
   /** Original lifecycle event (for debugging) */
@@ -219,7 +232,8 @@ export const INTEGRATION_MECHANISMS: IntegrationMechanism[] = [
 ];
 
 /**
- * Reliability ordering (higher = more trustworthy)
+ * Legacy presentation order, only comparable within the same event and scope.
+ * Never use a protocol name or another event's score as completion evidence.
  */
 export const RELIABILITY_ORDER: Record<CompletionReliability, number> = {
   [CompletionReliability.Manual]: 0,

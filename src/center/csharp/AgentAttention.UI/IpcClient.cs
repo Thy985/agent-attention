@@ -1,7 +1,5 @@
 using System;
-using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading;
@@ -22,7 +20,7 @@ namespace AgentAttention.UI;
 ///
 /// M6b RPC contract:
 ///   "cmd"                -> client request; server handles and replies with "cmd-ack"
-///   "cmd-ack"            -> server response; drives pending TaskCompletionSource
+///   "cmd-ack"            -> server response; read on the command connection
 /// </summary>
 public sealed class IpcClient : IDisposable
 {
@@ -31,9 +29,8 @@ public sealed class IpcClient : IDisposable
     private bool _running;
     private Task? _connectTask;
     private int _port;
-    private readonly Dictionary<string, TaskCompletionSource<PipeMessage>> _pendingCommands = new();
-    private string? _token;
-    private bool _authRejected;
+    private CancellationTokenSource? _stopCts;
+    private volatile bool _connected;
 
     public event Action<AttentionState>? OnStateUpdate;
     public event Action? OnRegistryReload;
@@ -41,7 +38,7 @@ public sealed class IpcClient : IDisposable
     /// <summary>Emitted each time the connection is re-established after a disconnect.</summary>
     public event Action? OnReconnect;
 
-    public bool IsConnected => _port > 0;
+    public bool IsConnected => _connected;
 
     public static bool CanConnect(string stateDir)
     {
@@ -59,121 +56,117 @@ public sealed class IpcClient : IDisposable
         _stateDir=stateDir;
         _store=store;
         _port=ReadPort(stateDir);
-        _token=ReadAuthSecret(stateDir);
     }
 
     public void Start()
     {
-        if(_running || _port<=0)return;
+        if(_running)return;
         _running=true;
-        _connectTask=Task.Run(ConnectLoop);
+        _stopCts=new CancellationTokenSource();
+        var cancellation=_stopCts.Token;
+        _connectTask=Task.Run(()=>ConnectLoop(cancellation));
     }
 
     public void Stop()
     {
         _running=false;
-        _connectTask=null;
+        _connected=false;
+        _stopCts?.Cancel();
     }
 
-    /// <summary>M6b: Send a command via IPC and wait for ack. Returns null on timeout/failure.</summary>
+    /// <summary>Authenticate and read the ack on the SAME command connection.</summary>
     public async Task<PipeMessage?> SendCommand(string command, params string[] args)
     {
-        if(_port<=0)return null;
-        var requestId=Guid.NewGuid().ToString("N")[..8];
-        var tcs=new TaskCompletionSource<PipeMessage>();
-        _pendingCommands[requestId]=tcs;
+        var port=ReadPort(_stateDir);
+        var token=ReadAuthSecret(_stateDir);
+        if(port<=0 || token==null)return null;
+        var requestId=Guid.NewGuid().ToString("N");
+        using var cts=new CancellationTokenSource(5000);
         try
         {
             using var client=new TcpClient();
-            await client.ConnectAsync("127.0.0.1",_port);
+            await client.ConnectAsync("127.0.0.1",port,cts.Token);
             using var stream=client.GetStream();
             using var writer=new StreamWriter(stream,new UTF8Encoding(false)){AutoFlush=true};
+            using var reader=new StreamReader(stream,new UTF8Encoding(false));
+            await writer.WriteLineAsync(JsonSerializer.Serialize(new { type="hello", token },Json.Options).AsMemory(),cts.Token);
             var payload=new { type="cmd", requestId, command, args };
-            var json=JsonSerializer.Serialize(payload,Json.Options);
-            await writer.WriteLineAsync(json);
-            using var cts=new CancellationTokenSource(5000);
-            cts.Token.Register(()=>{
-                if(_pendingCommands.Remove(requestId,out var failed))
-                    failed.SetResult(null!);
-            });
-            return await tcs.Task;
+            await writer.WriteLineAsync(JsonSerializer.Serialize(payload,Json.Options).AsMemory(),cts.Token);
+            while(await reader.ReadLineAsync(cts.Token) is { } line)
+            {
+                var msg=JsonSerializer.Deserialize<PipeMessage>(line,Json.Options);
+                if(msg?.Type=="auth-rejected")return null;
+                if(msg?.Type=="cmd-ack" && msg.RequestId==requestId)return msg;
+            }
         }
-        catch(Exception)
-        {
-            if(_pendingCommands.Remove(requestId,out var failed))
-                failed.SetResult(null!);
-            return null;
-        }
+        catch(Exception) { /* Connection failure/timeout: caller must treat the outcome as unknown, without replay. */ }
+        return null;
     }
 
-    public void Dispose()=>Stop();
-
-    private async Task ConnectLoop()
+    public void Dispose()
     {
-        while(_running)
+        Stop();
+        _stopCts?.Dispose();
+    }
+
+    private async Task ConnectLoop(CancellationToken cancellation)
+    {
+        while(!cancellation.IsCancellationRequested)
         {
             try
             {
+                // Both values rotate after a daemon restart; never cache a rejected token.
+                _port=ReadPort(_stateDir);
+                var token=ReadAuthSecret(_stateDir);
+                if(_port<=0 || token==null)
+                {
+                    await Task.Delay(500,cancellation);
+                    continue;
+                }
                 using var client=new TcpClient();
-                await client.ConnectAsync("127.0.0.1",_port);
+                await client.ConnectAsync("127.0.0.1",_port,cancellation);
                 using var stream=client.GetStream();
                 using var writer=new StreamWriter(stream,new UTF8Encoding(false)){AutoFlush=true};
                 using var reader=new StreamReader(stream,new UTF8Encoding(false));
-                // Re-read token on each reconnect to handle daemon restart
-                if (_token == null || _token.Length < 32)
-                    _token = ReadAuthSecret(_stateDir);
-                if (_authRejected)
+                await writer.WriteLineAsync(JsonSerializer.Serialize(new { type="hello", token },Json.Options).AsMemory(),cancellation);
+                await writer.WriteLineAsync("{\"type\":\"subscribe\"}".AsMemory(),cancellation);
+                var received=false;
+                while(!cancellation.IsCancellationRequested)
                 {
-                    _authRejected = false;
-                    break;
-                }
-                // M8 P0: auth handshake before subscribe
-                await writer.WriteLineAsync("{\"type\":\"hello\",\"token\":\""+_token+"\"}");
-                await writer.WriteLineAsync("{\"type\":\"subscribe\"}");
-                while(_running && client.Connected)
-                {
-                    var line=await reader.ReadLineAsync();
+                    var line=await reader.ReadLineAsync(cancellation);
                     if(line==null)break;
-                    try
+                    var msg=JsonSerializer.Deserialize<PipeMessage>(line,Json.Options);
+                    if(msg==null)continue;
+                    if(msg.Type=="auth-rejected")break;
+                    if(!received)
                     {
-                        var msg=JsonSerializer.Deserialize<PipeMessage>(line,Json.Options);
-                        if(msg==null)continue;
-                        switch(msg.Type)
-                        {
-                            case "state":
-                            case "state-changed":
-                                if(msg.State!=null)OnStateUpdate?.Invoke(msg.State);
-                                break;
-                            case "registry-changed":
-                                OnRegistryReload?.Invoke();
-                                break;
-                            case "daemon-status":
-                                if(msg.Status!=null)OnDaemonStatus?.Invoke(msg.Status);
-                                break;
-                            case "auth-rejected":
-                                // M8 P1 fix: fall back to polling — daemon may have restarted with new token
-                                _authRejected = true;
-                                break;
-                            case "cmd-ack":
-                                if(msg.RequestId!=null
-                                    && _pendingCommands.Remove(msg.RequestId,out var tcs))
-                                    tcs.SetResult(msg);
-                                break;
-                        }
+                        received=true;
+                        _connected=true;
+                        OnReconnect?.Invoke();
                     }
-                    catch{}
+                    switch(msg.Type)
+                    {
+                        case "state":
+                            if(msg.State!=null)OnStateUpdate?.Invoke(msg.State);
+                            break;
+                        case "state-changed":
+                            OnStateUpdate?.Invoke(_store.ReadTrayState());
+                            break;
+                        case "registry-changed":
+                            OnRegistryReload?.Invoke();
+                            break;
+                        case "daemon-status":
+                            var status=msg.Payload?.Status ?? msg.Status;
+                            if(status!=null)OnDaemonStatus?.Invoke(status);
+                            break;
+                    }
                 }
-                await Task.Delay(500);
-                // M6a: reconnect → TrayController rebuilds full snapshot
-                OnReconnect?.Invoke();
-                var p=ReadPort(_stateDir);
-                if(p!=_port){_port=p;}
             }
-            catch(Exception)
-            {
-                if(!_running)break;
-                await Task.Delay(1000);
-            }
+            catch(OperationCanceledException) when(cancellation.IsCancellationRequested) { break; }
+            catch(Exception) { /* Polling remains available; retry with fresh port/token. */ }
+            finally { _connected=false; }
+            try { await Task.Delay(500,cancellation); }
+            catch(OperationCanceledException) { break; }
         }
     }
 
@@ -217,6 +210,8 @@ public sealed class PipeMessage
     public AttentionState? State { get; set; }
     [System.Text.Json.Serialization.JsonPropertyName("status")]
     public string? Status { get; set; }
+    [System.Text.Json.Serialization.JsonPropertyName("payload")]
+    public DaemonStatusPayload? Payload { get; set; }
     [System.Text.Json.Serialization.JsonPropertyName("requestId")]
     public string? RequestId { get; set; }
     [System.Text.Json.Serialization.JsonPropertyName("ok")]
@@ -225,4 +220,10 @@ public sealed class PipeMessage
     public int? Code { get; set; }
     [System.Text.Json.Serialization.JsonPropertyName("error")]
     public string? Error { get; set; }
+}
+
+public sealed class DaemonStatusPayload
+{
+    [System.Text.Json.Serialization.JsonPropertyName("status")]
+    public string? Status { get; set; }
 }

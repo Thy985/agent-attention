@@ -1,3 +1,4 @@
+import { resolveStateDir } from '../paths';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -11,7 +12,7 @@ const DEDUP_TTL_MS = 30_000;
  * AGENT_ATTENTION_HOME overrides the base directory (used by tests and sandboxed runs).
  */
 const DEDUP_LOG_PATH = path.join(
-  process.env.AGENT_ATTENTION_HOME || path.join(os.homedir(), '.agent-attention'),
+  resolveStateDir(),
   'dedup.json',
 );
 
@@ -22,8 +23,8 @@ const localCache = new Map<string, number>();
  * Compute a hash key for deduplication: hash(JSON.stringify([agent,event,message])).
  * Using JSON.stringify avoids separator-collision bugs (e.g. "a:b:c" vs "a:b:c" parsed differently).
  */
-function makeKey(agent: string, event: string, message: string): string {
-  return crypto.createHash('sha1').update(JSON.stringify([agent, event, message])).digest('hex');
+function makeKey(agent: string, event: string, message: string, scope?: { sessionId?: string; taskId?: string; eventId?: string }): string {
+  return crypto.createHash('sha1').update(JSON.stringify([agent, event, scope?.eventId || message, scope?.sessionId ?? null, scope?.taskId ?? null])).digest('hex');
 }
 
 /** Persisted dedup log shape: { [key]: epochMs }. */
@@ -109,9 +110,9 @@ export function getDedupAgentId(): string {
   return require('os').hostname();
 }
 
-export function shouldNotify(agent: string, event: string, message: string): boolean {
+export function shouldNotify(agent: string, event: string, message: string, scope?: { sessionId?: string; taskId?: string; eventId?: string }): boolean {
   const now = Date.now();
-  const key = makeKey(agent, event, message);
+  const key = makeKey(agent, event, message, scope);
 
   // 1. Fast path — in-memory cache (cheap, avoids disk I/O)
   const localTs = localCache.get(key);

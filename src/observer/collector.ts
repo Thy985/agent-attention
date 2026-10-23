@@ -1,3 +1,4 @@
+import { resolveStateDir } from '../paths';
 /**
  * Attention Observer — observation collector.
  *
@@ -21,8 +22,7 @@ import { readState, StateEvent } from '../state/AttentionState';
 import { OBSERVER_THRESHOLDS as T } from './types';
 
 function stateDir(): string {
-  return process.env.AGENT_ATTENTION_HOME
-    ?? path.join(os.homedir(), '.agent-attention');
+  return resolveStateDir();
 }
 
 function activityPath(agentId: string): string {
